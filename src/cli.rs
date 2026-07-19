@@ -31,8 +31,8 @@ pub enum UsageProfile {
 impl UsageProfile {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ModelTraining => "Model training (driver only)",
-            Self::CudaDevelopment => "CUDA development (driver + toolkit)",
+            Self::ModelTraining => "NVIDIA driver only (frameworks and containers)",
+            Self::CudaDevelopment => "NVIDIA driver + CUDA Toolkit (nvcc and native development)",
         }
     }
 }

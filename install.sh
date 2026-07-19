@@ -24,8 +24,13 @@ download() {
     url="$1"
     destination="$2"
 
+    case "$url" in
+        https://*) ;;
+        *) fail "refusing non-HTTPS download URL: $url" ;;
+    esac
+
     if command_exists curl; then
-        curl --fail --location --silent --show-error "$url" --output "$destination"
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 "$url" --output "$destination"
     elif command_exists wget; then
         wget --quiet "$url" --output-document="$destination"
     else
@@ -62,6 +67,21 @@ trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 say "Downloading cudaenv for ${target}..."
 download "$download_url" "$temporary_directory/$archive" ||
     fail "could not download $download_url"
+download "${CUDAENV_CHECKSUM_URL:-${download_url}.sha256}" "$temporary_directory/$archive.sha256" ||
+    fail "could not download the release checksum"
+
+expected_checksum="$(sed -n '1{s/[[:space:]].*//;p;}' "$temporary_directory/$archive.sha256")"
+case "$expected_checksum" in
+    *[!0-9a-fA-F]* | '') fail "release checksum is invalid" ;;
+esac
+if command_exists sha256sum; then
+    actual_checksum="$(sha256sum "$temporary_directory/$archive" | sed 's/[[:space:]].*//')"
+elif command_exists shasum; then
+    actual_checksum="$(shasum -a 256 "$temporary_directory/$archive" | sed 's/[[:space:]].*//')"
+else
+    fail "sha256sum or shasum is required to verify cudaenv"
+fi
+[ "$actual_checksum" = "$expected_checksum" ] || fail "release checksum verification failed"
 
 tar -xzf "$temporary_directory/$archive" -C "$temporary_directory"
 [ -f "$temporary_directory/cudaenv" ] || fail "downloaded archive does not contain cudaenv"

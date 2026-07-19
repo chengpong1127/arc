@@ -1,52 +1,80 @@
-use std::fs;
+use std::{collections::HashMap, fs};
 
-use anyhow::{Result, bail};
-use os_info::Type;
+use anyhow::{Context, Result, bail};
 
 use crate::model::system::{Distribution, OsInfo};
 
+const OS_RELEASE_PATH: &str = "/etc/os-release";
+
 pub fn detect() -> Result<OsInfo> {
-    let info = os_info::get();
-    let os_release_id = if matches!(info.os_type(), Type::Linux | Type::Unknown) {
-        os_release_id()
-    } else {
-        None
-    };
-    let distribution = map_distribution(info.os_type(), os_release_id.as_deref())?;
-    let architecture = info
-        .architecture()
-        .map(str::to_owned)
-        .unwrap_or_else(|| std::env::consts::ARCH.to_owned());
+    let contents = fs::read_to_string(OS_RELEASE_PATH)
+        .with_context(|| format!("could not read {OS_RELEASE_PATH}"))?;
+    let fields = parse_os_release(&contents);
+    let id = required_field(&fields, "ID")?.to_ascii_lowercase();
+    let distribution = map_distribution(&id)?;
+    let version_id = required_field(&fields, "VERSION_ID")?.to_owned();
+    let name = fields
+        .get("NAME")
+        .cloned()
+        .unwrap_or_else(|| distribution_name(distribution).to_owned());
 
     Ok(OsInfo {
         distribution,
-        name: distribution_name(distribution).to_owned(),
-        version_id: info.version().to_string(),
-        architecture,
+        name,
+        version_id,
+        architecture: std::env::consts::ARCH.to_owned(),
         is_wsl: detect_wsl(),
     })
 }
 
-fn map_distribution(os_type: Type, release_id: Option<&str>) -> Result<Distribution> {
-    let distribution = match os_type {
-        Type::Ubuntu => Distribution::Ubuntu,
-        Type::Debian => Distribution::Debian,
-        Type::RedHatEnterprise | Type::Redhat => Distribution::Rhel,
-        Type::AlmaLinux => Distribution::AlmaLinux,
-        Type::RockyLinux => Distribution::RockyLinux,
-        Type::OracleLinux => Distribution::OracleLinux,
-        Type::Fedora => Distribution::Fedora,
-        Type::Amazon => Distribution::AmazonLinux,
-        Type::Mariner => Distribution::AzureLinux,
-        Type::openSUSE => Distribution::OpenSuse,
-        Type::SUSE => Distribution::Sles,
-        Type::Linux | Type::Unknown if matches!(release_id, Some("kylin" | "kylinos")) => {
-            Distribution::KylinOs
-        }
-        Type::Linux | Type::Unknown if matches!(release_id, Some("azurelinux" | "azl")) => {
-            Distribution::AzureLinux
-        }
-        _ => bail!("GPU package installation is not supported on {os_type}"),
+fn parse_os_release(contents: &str) -> HashMap<String, String> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.to_owned(), unquote(value).to_owned()))
+        })
+        .collect()
+}
+
+fn unquote(value: &str) -> &str {
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+fn required_field<'a>(fields: &'a HashMap<String, String>, key: &str) -> Result<&'a str> {
+    fields
+        .get(key)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{OS_RELEASE_PATH} does not contain {key}"))
+}
+
+fn map_distribution(id: &str) -> Result<Distribution> {
+    let distribution = match id {
+        "ubuntu" => Distribution::Ubuntu,
+        "debian" => Distribution::Debian,
+        "rhel" | "redhat" => Distribution::Rhel,
+        "almalinux" => Distribution::AlmaLinux,
+        "rocky" | "rockylinux" => Distribution::RockyLinux,
+        "ol" | "oracle" | "oraclelinux" => Distribution::OracleLinux,
+        "fedora" => Distribution::Fedora,
+        "amzn" => Distribution::AmazonLinux,
+        "azurelinux" | "azl" | "mariner" => Distribution::AzureLinux,
+        "opensuse-leap" | "opensuse" => Distribution::OpenSuse,
+        "sles" => Distribution::Sles,
+        "kylin" | "kylinos" => Distribution::KylinOs,
+        _ => bail!("GPU package installation is not supported on Linux distribution {id:?}"),
     };
     Ok(distribution)
 }
@@ -68,14 +96,6 @@ fn distribution_name(distribution: Distribution) -> &'static str {
     }
 }
 
-fn os_release_id() -> Option<String> {
-    let contents = fs::read_to_string("/etc/os-release").ok()?;
-    contents.lines().find_map(|line| {
-        line.strip_prefix("ID=")
-            .map(|value| value.trim_matches(['\'', '"']).to_ascii_lowercase())
-    })
-}
-
 fn detect_wsl() -> bool {
     std::env::var_os("WSL_INTEROP").is_some()
         || std::env::var_os("WSL_DISTRO_NAME").is_some()
@@ -91,24 +111,39 @@ mod tests {
     use crate::model::system::PackageManager;
 
     #[test]
-    fn maps_os_info_results() {
+    fn preserves_version_id_exactly() {
+        let fields = parse_os_release(
+            "NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"24.04\"\nPRETTY_NAME=\"Ubuntu 24.04.2 LTS\"\n",
+        );
+        assert_eq!(required_field(&fields, "VERSION_ID").unwrap(), "24.04");
+        assert_eq!(required_field(&fields, "NAME").unwrap(), "Ubuntu");
+    }
+
+    #[test]
+    fn parses_comments_unquoted_values_and_equals_signs() {
+        let fields = parse_os_release("# comment\nID=debian\nVERSION_ID=13\nEXTRA=one=two\n");
+        assert_eq!(fields.get("ID").map(String::as_str), Some("debian"));
+        assert_eq!(fields.get("EXTRA").map(String::as_str), Some("one=two"));
+    }
+
+    #[test]
+    fn maps_os_release_ids() {
         let cases = [
-            (Type::Ubuntu, None, Distribution::Ubuntu),
-            (Type::Debian, None, Distribution::Debian),
-            (Type::RedHatEnterprise, None, Distribution::Rhel),
-            (Type::AlmaLinux, None, Distribution::AlmaLinux),
-            (Type::RockyLinux, None, Distribution::RockyLinux),
-            (Type::OracleLinux, None, Distribution::OracleLinux),
-            (Type::Fedora, None, Distribution::Fedora),
-            (Type::Amazon, None, Distribution::AmazonLinux),
-            (Type::Mariner, None, Distribution::AzureLinux),
-            (Type::Linux, Some("azurelinux"), Distribution::AzureLinux),
-            (Type::openSUSE, None, Distribution::OpenSuse),
-            (Type::SUSE, None, Distribution::Sles),
-            (Type::Linux, Some("kylin"), Distribution::KylinOs),
+            ("ubuntu", Distribution::Ubuntu),
+            ("debian", Distribution::Debian),
+            ("rhel", Distribution::Rhel),
+            ("almalinux", Distribution::AlmaLinux),
+            ("rocky", Distribution::RockyLinux),
+            ("ol", Distribution::OracleLinux),
+            ("fedora", Distribution::Fedora),
+            ("amzn", Distribution::AmazonLinux),
+            ("azurelinux", Distribution::AzureLinux),
+            ("opensuse-leap", Distribution::OpenSuse),
+            ("sles", Distribution::Sles),
+            ("kylin", Distribution::KylinOs),
         ];
-        for (kind, id, expected) in cases {
-            assert_eq!(map_distribution(kind, id).unwrap(), expected);
+        for (id, expected) in cases {
+            assert_eq!(map_distribution(id).unwrap(), expected);
         }
     }
 
@@ -116,7 +151,7 @@ mod tests {
     fn selects_package_manager_family() {
         for (distribution, expected) in [
             (Distribution::Ubuntu, PackageManager::AptGet),
-            (Distribution::KylinOs, PackageManager::AptGet),
+            (Distribution::KylinOs, PackageManager::Dnf),
             (Distribution::OracleLinux, PackageManager::Dnf),
             (Distribution::AzureLinux, PackageManager::Tdnf),
             (Distribution::Sles, PackageManager::Zypper),

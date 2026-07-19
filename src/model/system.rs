@@ -49,15 +49,14 @@ pub struct OsInfo {
 impl OsInfo {
     pub fn package_manager(&self) -> PackageManager {
         match self.distribution {
-            Distribution::Ubuntu | Distribution::Debian | Distribution::KylinOs => {
-                PackageManager::AptGet
-            }
+            Distribution::Ubuntu | Distribution::Debian => PackageManager::AptGet,
             Distribution::Rhel
             | Distribution::AlmaLinux
             | Distribution::RockyLinux
             | Distribution::OracleLinux
             | Distribution::Fedora
-            | Distribution::AmazonLinux => PackageManager::Dnf,
+            | Distribution::AmazonLinux
+            | Distribution::KylinOs => PackageManager::Dnf,
             Distribution::AzureLinux => PackageManager::Tdnf,
             Distribution::OpenSuse | Distribution::Sles => PackageManager::Zypper,
         }

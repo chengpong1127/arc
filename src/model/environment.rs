@@ -10,6 +10,7 @@ pub struct ToolkitStatus {
 pub struct ProviderStatus {
     pub vendor: GpuVendor,
     pub devices: Vec<GpuDevice>,
+    pub driver_installed: bool,
     pub driver_version: Option<String>,
     pub toolkits: Vec<ToolkitStatus>,
 }

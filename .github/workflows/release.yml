@@ -9,8 +9,22 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features --locked
+      - run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - run: shellcheck install.sh
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify
     strategy:
       matrix:
         include:
@@ -29,11 +43,15 @@ jobs:
       - name: Build
         run: cargo build --locked --release --target "${{ matrix.target }}"
       - name: Package
-        run: tar -C "target/${{ matrix.target }}/release" -czf "cudaenv-${{ matrix.target }}.tar.gz" cudaenv
+        run: |
+          tar -C "target/${{ matrix.target }}/release" -czf "cudaenv-${{ matrix.target }}.tar.gz" cudaenv
+          sha256sum "cudaenv-${{ matrix.target }}.tar.gz" > "cudaenv-${{ matrix.target }}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: cudaenv-${{ matrix.target }}
-          path: cudaenv-${{ matrix.target }}.tar.gz
+          path: |
+            cudaenv-${{ matrix.target }}.tar.gz
+            cudaenv-${{ matrix.target }}.tar.gz.sha256
 
   publish:
     name: Publish GitHub release

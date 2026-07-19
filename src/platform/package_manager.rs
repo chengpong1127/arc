@@ -1,3 +1,7 @@
+use std::process::Command;
+
+use anyhow::{Context, Result};
+
 use crate::model::{command::CommandSpec, system::PackageManager};
 
 pub fn refresh_command(manager: PackageManager) -> CommandSpec {
@@ -23,14 +27,43 @@ pub fn query_command(manager: PackageManager, package: &str) -> CommandSpec {
 }
 
 pub fn install_command(manager: PackageManager, package: &str) -> CommandSpec {
+    install_command_with_options(manager, package, false)
+}
+
+pub fn install_command_with_options(
+    manager: PackageManager,
+    package: &str,
+    allow_erasing: bool,
+) -> CommandSpec {
     match manager {
         PackageManager::AptGet => CommandSpec::sudo("apt-get", ["install", "-y", package]),
+        PackageManager::Dnf if allow_erasing => {
+            CommandSpec::sudo("dnf", ["install", "-y", "--allowerasing", package])
+        }
         PackageManager::Dnf => CommandSpec::sudo("dnf", ["install", "-y", package]),
         PackageManager::Tdnf => CommandSpec::sudo("tdnf", ["install", "-y", package]),
         PackageManager::Zypper => {
             CommandSpec::sudo("zypper", ["--non-interactive", "install", package])
         }
     }
+}
+
+pub fn is_installed(manager: PackageManager, package: &str) -> Result<bool> {
+    let (program, args): (&str, Vec<&str>) = match manager {
+        PackageManager::AptGet => ("dpkg-query", vec!["-W", "-f=${Status}", package]),
+        PackageManager::Dnf | PackageManager::Tdnf | PackageManager::Zypper => {
+            ("rpm", vec!["-q", package])
+        }
+    };
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("could not query whether {package} is installed"))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    Ok(manager != PackageManager::AptGet
+        || String::from_utf8_lossy(&output.stdout).trim() == "install ok installed")
 }
 
 pub fn apt_remove_command(options: &[&str], packages: &[&str]) -> CommandSpec {
@@ -64,5 +97,10 @@ mod tests {
                     .contains("gpu-sdk")
             );
         }
+        assert!(
+            install_command_with_options(PackageManager::Dnf, "nvidia-open", true)
+                .display()
+                .contains("--allowerasing")
+        );
     }
 }

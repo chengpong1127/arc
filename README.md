@@ -18,9 +18,9 @@ curl -LsSf https://raw.githubusercontent.com/chengpong1127/cudaenv/main/install.
 ```
 
 The installer puts `cudaenv` in `~/.local/bin` and then asks whether to install
-your CUDA environment. The guided setup lets you choose model training (NVIDIA
-driver only) or CUDA development (driver and CUDA Toolkit), shows the complete
-plan, and asks for confirmation before changing the system.
+your CUDA environment. The guided setup lets you choose the NVIDIA driver only
+or the driver plus CUDA Toolkit, shows the complete plan, and asks for
+confirmation before changing the system.
 
 To install the binary without starting CUDA setup, answer `n` at the prompt and
 run `cudaenv install` later. Set `CUDAENV_INSTALL_DIR` to use a different binary
@@ -43,13 +43,13 @@ cargo run -- install --toolkit 13.1
 cargo run -- install --profile cuda-development --dry-run
 ```
 
-With no `--profile`, `install` asks whether the machine is for model training or
-CUDA development. Model training installs only the NVIDIA driver. CUDA
-development installs the driver and NVIDIA's latest stable CUDA Toolkit.
+With no `--profile`, `install` asks directly whether to install the NVIDIA
+driver only or the driver plus NVIDIA's latest stable CUDA Toolkit. The existing
+profile flag names remain available for scripts.
 
-Driver flavor selection is automatic. Unidentified GPUs default to open kernel
-modules without another prompt. The optional `--driver` flag can still provide
-an explicit override.
+Driver flavor selection is automatic for recognized GPUs. If the GPU generation
+cannot be identified safely, cudaenv stops and asks for an explicit
+`--driver open` or `--driver proprietary` choice.
 
 Every install prints the full repository and package command plan first. It asks
 for confirmation unless `--yes` is supplied; `--dry-run` never changes the
@@ -69,10 +69,14 @@ cargo run -- uninstall
 cargo run -- uninstall --yes
 ```
 
-`status` reports both the loaded NVIDIA driver version and active CUDA Toolkit
-version. Install and uninstall plans use that status: already-installed
-components are skipped, and uninstall only removes components detected as
-present.
+`status` reports driver package installation separately from the loaded driver
+runtime, as well as the active CUDA Toolkit version. Install plans query the
+system package database so already-installed components are skipped. On Ubuntu,
+uninstall resolves and displays the exact installed meta-packages it will remove;
+it retains dependencies instead of running a broad automatic cleanup.
+
+Release downloads are verified against SHA-256 checksum files published with
+each release.
 
 ## Architecture
 

@@ -54,7 +54,7 @@ pub fn versioned_package(version: &str) -> Result<String> {
 }
 
 pub fn verification_command() -> CommandSpec {
-    CommandSpec::new("nvcc", ["--version"])
+    CommandSpec::new("/usr/local/cuda/bin/nvcc", ["--version"])
 }
 
 #[cfg(test)]

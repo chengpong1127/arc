@@ -20,6 +20,7 @@ pub fn operation_plan(plan: &OperationPlan) {
         println!("  # no changes required");
     } else {
         for step in &plan.steps {
+            println!("  # {}", step.description);
             println!("  $ {}", step.command.display());
         }
     }
@@ -46,9 +47,21 @@ pub fn system_status(os: &OsInfo, providers: &[ProviderStatus]) {
             }
         }
         println!(
-            "\n{} Driver:\n{}",
+            "\n{} Driver package:\n{}",
             status.vendor,
-            status.driver_version.as_deref().unwrap_or("Not installed")
+            if status.driver_installed {
+                "Installed"
+            } else {
+                "Not installed"
+            }
+        );
+        println!(
+            "\n{} Driver runtime:\n{}",
+            status.vendor,
+            status
+                .driver_version
+                .as_deref()
+                .unwrap_or("Not loaded or not operational")
         );
         for toolkit in &status.toolkits {
             println!("\n{}:\n{}", toolkit.name, toolkit.version);
