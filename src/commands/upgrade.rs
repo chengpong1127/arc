@@ -2,10 +2,12 @@ use anyhow::Result;
 
 use crate::{
     cli::UpgradeArgs,
-    platform::{command, os},
+    platform::os,
     providers::nvidia::upgrade::{self, UpgradeOptions},
     ui::{output, prompt},
 };
+
+use super::lifecycle::{self, PlanLifecycle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpgradeOutcome {
@@ -15,7 +17,7 @@ pub enum UpgradeOutcome {
 
 pub fn run(args: UpgradeArgs, verbose: bool, show_commands: bool) -> Result<UpgradeOutcome> {
     let options = UpgradeOptions::from_component_flags(args.driver, args.toolkit);
-    let mut plan = match upgrade::plan(&os::detect()?, &options) {
+    let plan = match upgrade::plan(&os::detect()?, &options) {
         Ok(plan) => plan,
         Err(error) if upgrade::is_actionable(&error) => {
             output::unavailable(&format!(
@@ -26,29 +28,22 @@ pub fn run(args: UpgradeArgs, verbose: bool, show_commands: bool) -> Result<Upgr
         }
         Err(error) => return Err(error),
     };
-    command::normalize_for_current_user(&mut plan);
-    output::operation_plan(&plan, show_commands);
-
-    if args.dry_run {
-        output::notice("Dry run complete. No changes were made.");
-        return Ok(UpgradeOutcome::Success);
-    }
-    if plan.is_noop() {
-        output::notice(
-            "No selected installed component has a compatible upgrade. No changes were made.",
-        );
-        return Ok(UpgradeOutcome::Success);
-    }
-    if !args.yes && !prompt::confirm_upgrade()? {
-        output::cancelled("Upgrade");
-        return Ok(UpgradeOutcome::Success);
-    }
-    let mut reporter = output::ExecutionReporter::new(&plan, verbose);
-    let execution =
-        command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
-            reporter.report(event)
-        })?;
-    output::operation_completed(&plan);
-    output::execution_log(execution.log_path.as_deref());
+    lifecycle::run(
+        plan,
+        PlanLifecycle {
+            dry_run: args.dry_run,
+            assume_yes: args.yes,
+            verbose,
+            show_commands,
+            display_noop_plan: true,
+            cancellation_label: "Upgrade",
+        },
+        prompt::confirm_upgrade,
+        |_| {
+            output::notice(
+                "No selected installed component has a compatible upgrade. No changes were made.",
+            )
+        },
+    )?;
     Ok(UpgradeOutcome::Success)
 }

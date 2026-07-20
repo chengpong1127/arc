@@ -1,8 +1,9 @@
-use std::process::Command;
-
 use anyhow::{Context, Result};
 
-use crate::model::{command::CommandSpec, system::PackageManager};
+use crate::{
+    model::{command::CommandSpec, system::PackageManager},
+    platform::command::{self, CommandRunner, SystemCommandRunner},
+};
 
 pub fn refresh_command(manager: PackageManager) -> CommandSpec {
     match manager {
@@ -75,22 +76,59 @@ pub fn reinstall_command(manager: PackageManager, packages: &[String]) -> Option
     })
 }
 
-pub fn is_installed(manager: PackageManager, package: &str) -> Result<bool> {
-    let (program, args): (&str, Vec<&str>) = match manager {
-        PackageManager::AptGet => ("dpkg-query", vec!["-W", "-f=${Status}", package]),
-        PackageManager::Dnf | PackageManager::Tdnf | PackageManager::Zypper => {
-            ("rpm", vec!["-q", package])
-        }
+pub fn installed_packages(manager: PackageManager) -> Result<Vec<String>> {
+    installed_packages_with(&SystemCommandRunner, manager)
+}
+
+pub fn installed_packages_qualified(manager: PackageManager) -> Result<Vec<String>> {
+    installed_packages_with_options(&SystemCommandRunner, manager, true)
+}
+
+pub fn installed_packages_with(
+    runner: &impl CommandRunner,
+    manager: PackageManager,
+) -> Result<Vec<String>> {
+    installed_packages_with_options(runner, manager, false)
+}
+
+fn installed_packages_with_options(
+    runner: &impl CommandRunner,
+    manager: PackageManager,
+    preserve_architecture: bool,
+) -> Result<Vec<String>> {
+    let command = match manager {
+        PackageManager::AptGet => CommandSpec::new(
+            "dpkg-query",
+            ["-W", "-f=${db:Status-Abbrev}\t${binary:Package}\\n"],
+        ),
+        _ => CommandSpec::new("rpm", ["-qa", "--qf", "%{NAME}\\n"]),
     };
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("could not query whether {package} is installed"))?;
-    if !output.status.success() {
-        return Ok(false);
+    let output =
+        command::capture(runner, command).context("could not inspect installed packages")?;
+    if !output.success {
+        return Ok(Vec::new());
     }
-    Ok(manager != PackageManager::AptGet
-        || String::from_utf8_lossy(&output.stdout).trim() == "install ok installed")
+    let mut result = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            if manager == PackageManager::AptGet {
+                let (status, package) = line.split_once('\t')?;
+                status.starts_with("ii ").then(|| {
+                    if preserve_architecture {
+                        package.to_owned()
+                    } else {
+                        package.split(':').next().unwrap_or(package).to_owned()
+                    }
+                })
+            } else {
+                Some(line.trim().to_owned())
+            }
+        })
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    result.sort();
+    result.dedup();
+    Ok(result)
 }
 
 pub fn apt_remove_command(options: &[&str], packages: &[&str]) -> CommandSpec {

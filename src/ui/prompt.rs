@@ -14,7 +14,7 @@ pub fn confirm_install() -> Result<bool> {
 
 pub fn select_usage_profile() -> Result<UsageProfile> {
     let profiles = [UsageProfile::ModelTraining, UsageProfile::CudaDevelopment];
-    let options = profiles.map(UsageProfile::label);
+    let options = profiles.map(UsageProfile::selection_label);
     println!(
         "\n  {}\n  {}\n  {}\n",
         style("Set up your GPU environment").cyan().bold(),

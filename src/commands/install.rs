@@ -2,21 +2,20 @@ use anyhow::{Result, bail};
 
 use crate::{
     cli::{DriverMode, InstallArgs, UsageProfile},
-    platform::{command, os},
+    platform::os,
     providers::nvidia::{
         driver::DriverPreference,
-        install::{self, InstallOptions, InstallProfile},
+        install::{self, InstallOptions},
     },
     ui::{output, prompt},
 };
 
+use super::lifecycle::{self, PlanLifecycle};
+
 pub fn run(args: InstallArgs, verbose: bool, show_commands: bool) -> Result<()> {
     let profile = resolve_profile(args.profile, args.toolkit.as_deref())?;
     let options = InstallOptions {
-        profile: match profile {
-            UsageProfile::ModelTraining => InstallProfile::ModelTraining,
-            UsageProfile::CudaDevelopment => InstallProfile::CudaDevelopment,
-        },
+        profile,
         toolkit_version: args.toolkit.clone(),
         driver: match args.driver {
             DriverMode::Auto => DriverPreference::Auto,
@@ -24,34 +23,26 @@ pub fn run(args: InstallArgs, verbose: bool, show_commands: bool) -> Result<()> 
             DriverMode::Proprietary => DriverPreference::Proprietary,
         },
     };
-    let mut plan = install::plan(&os::detect()?, &options)?;
-    command::normalize_for_current_user(&mut plan);
-    output::operation_plan(&plan, show_commands);
-
-    if args.dry_run {
-        output::notice("Dry run complete. No changes were made.");
-        return Ok(());
-    }
-    if plan.is_noop() {
-        if plan.next_step.is_some() {
-            output::operation_completed(&plan);
-        } else {
-            output::notice("Requested components are already installed. No changes were made.");
-        }
-        return Ok(());
-    }
-    if !args.yes && !prompt::confirm_install()? {
-        output::cancelled("Installation");
-        return Ok(());
-    }
-    let mut reporter = output::ExecutionReporter::new(&plan, verbose);
-    let execution =
-        command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
-            reporter.report(event)
-        })?;
-    output::operation_completed(&plan);
-    output::execution_log(execution.log_path.as_deref());
-    Ok(())
+    let plan = install::plan(&os::detect()?, &options)?;
+    lifecycle::run(
+        plan,
+        PlanLifecycle {
+            dry_run: args.dry_run,
+            assume_yes: args.yes,
+            verbose,
+            show_commands,
+            display_noop_plan: true,
+            cancellation_label: "Installation",
+        },
+        prompt::confirm_install,
+        |plan| {
+            if plan.next_step.is_some() {
+                output::operation_completed(plan);
+            } else {
+                output::notice("Requested components are already installed. No changes were made.");
+            }
+        },
+    )
 }
 
 fn resolve_profile(profile: Option<UsageProfile>, toolkit: Option<&str>) -> Result<UsageProfile> {

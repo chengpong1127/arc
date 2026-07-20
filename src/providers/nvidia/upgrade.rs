@@ -217,7 +217,7 @@ fn blocked(message: impl std::fmt::Display) -> anyhow::Error {
 pub fn plan(os: &OsInfo, options: &UpgradeOptions) -> Result<OperationPlan> {
     os.ensure_driver_installable("NVIDIA")?;
     let gpus = gpu::detect()?;
-    let packages = state::installed_packages(os)?;
+    let packages = package_manager::installed_packages(os.package_manager())?;
     let query = SystemPackageQuery;
     let current = detect_state(os, &packages, &query)?;
     build_plan(os, options, &gpus, &current, &query)

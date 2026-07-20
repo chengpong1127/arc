@@ -1,6 +1,4 @@
-use std::process::Command;
-
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::{
     model::{
@@ -35,7 +33,10 @@ pub fn plan(os: &OsInfo, status: &ProviderStatus) -> Result<OperationPlan> {
                 .join("; ")
         );
     }
-    let packages = installed_apt_packages(NVIDIA_CUDA_PATTERNS)?;
+    let packages = matching_packages(
+        &package_manager::installed_packages_qualified(os.package_manager())?,
+        NVIDIA_CUDA_PATTERNS,
+    );
     Ok(build_plan(status, packages))
 }
 
@@ -134,26 +135,19 @@ fn package_summary(packages: &[String]) -> String {
     }
 }
 
-fn installed_apt_packages(patterns: &[&str]) -> Result<Vec<String>> {
-    let output = Command::new("dpkg-query")
-        .args(["-W", "-f=${db:Status-Abbrev}\t${binary:Package}\\n"])
-        .args(patterns)
-        .output()
-        .context("could not inspect installed CUDA/NVIDIA packages")?;
-    let mut packages = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (status, package) = line.split_once('\t')?;
-            (status.starts_with("ii ")
-                && patterns
-                    .iter()
-                    .any(|pattern| package_matches(pattern, package)))
-            .then(|| package.to_owned())
+fn matching_packages(installed: &[String], patterns: &[&str]) -> Vec<String> {
+    let mut packages = installed
+        .iter()
+        .filter(|package| {
+            patterns
+                .iter()
+                .any(|pattern| package_matches(pattern, package))
         })
+        .cloned()
         .collect::<Vec<_>>();
     packages.sort();
     packages.dedup();
-    Ok(packages)
+    packages
 }
 
 fn package_matches(pattern: &str, package: &str) -> bool {

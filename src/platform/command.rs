@@ -45,12 +45,23 @@ pub struct CommandInvocation {
 }
 
 impl CommandInvocation {
-    fn new(command: CommandSpec) -> Self {
+    pub fn new(command: CommandSpec) -> Self {
         Self {
             command,
             env: Vec::new(),
         }
     }
+}
+
+pub fn capture(runner: &impl CommandRunner, command: CommandSpec) -> Result<CommandResult> {
+    runner.run(&CommandInvocation::new(command), OutputMode::Capture)
+}
+
+pub fn capture_stdout(runner: &impl CommandRunner, command: CommandSpec) -> Result<Option<String>> {
+    let result = capture(runner, command)?;
+    Ok(result
+        .success
+        .then(|| String::from_utf8_lossy(&result.stdout).trim().to_owned()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

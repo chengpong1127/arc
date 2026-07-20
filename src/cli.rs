@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+pub use crate::model::profile::InstallProfile as UsageProfile;
+
 /// A GPU environment manager for Linux.
 #[derive(Debug, Parser)]
 #[command(name = "arc", version, about)]
@@ -52,23 +54,6 @@ pub struct DoctorArgs {
     /// Expected workload; Toolkit absence is normal for model training.
     #[arg(long, value_enum, default_value_t = UsageProfile::ModelTraining)]
     pub profile: UsageProfile,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum UsageProfile {
-    /// Set up model training with frameworks such as PyTorch, TensorFlow, or JAX.
-    ModelTraining,
-    /// Set up native CUDA development.
-    CudaDevelopment,
-}
-
-impl UsageProfile {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ModelTraining => "Model training     PyTorch, TensorFlow, or JAX",
-            Self::CudaDevelopment => "CUDA development   Native CUDA apps and custom kernels",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
