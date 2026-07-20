@@ -322,7 +322,7 @@ fn build_plan(
         ],
         devices: status.devices.clone(),
         steps,
-        confirmation_warning: "No system changes will be made until you confirm.".into(),
+        confirmation_warning: String::new(),
         completion_message: "Installation completed.".into(),
         reboot_message: if driver_pending_activation {
             Some("The NVIDIA kernel module is installed but not loaded. Reboot, then run `arc doctor` if the driver is still unavailable.".into())

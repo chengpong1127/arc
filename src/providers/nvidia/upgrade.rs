@@ -490,7 +490,7 @@ pub fn build_plan(
         ],
         devices: current.status.devices.clone(),
         steps,
-        confirmation_warning: "No system changes will be made until you confirm.".into(),
+        confirmation_warning: String::new(),
         completion_message: "Upgrade completed and package versions were verified.".into(),
         reboot_message: driver_changes.then(|| "Reboot required: the running NVIDIA module may remain at the previous version until reboot.".into()),
     })
