@@ -48,6 +48,33 @@ pub fn install_command_with_options(
     }
 }
 
+pub fn reinstall_command(manager: PackageManager, packages: &[String]) -> Option<CommandSpec> {
+    if packages.is_empty() {
+        return None;
+    }
+    let package_refs = packages.iter().map(String::as_str);
+    Some(match manager {
+        PackageManager::AptGet => CommandSpec::sudo(
+            "apt-get",
+            ["install", "--reinstall", "-y"]
+                .into_iter()
+                .chain(package_refs),
+        ),
+        PackageManager::Dnf => {
+            CommandSpec::sudo("dnf", ["reinstall", "-y"].into_iter().chain(package_refs))
+        }
+        PackageManager::Tdnf => {
+            CommandSpec::sudo("tdnf", ["reinstall", "-y"].into_iter().chain(package_refs))
+        }
+        PackageManager::Zypper => CommandSpec::sudo(
+            "zypper",
+            ["--non-interactive", "install", "--force"]
+                .into_iter()
+                .chain(package_refs),
+        ),
+    })
+}
+
 pub fn is_installed(manager: PackageManager, package: &str) -> Result<bool> {
     let (program, args): (&str, Vec<&str>) = match manager {
         PackageManager::AptGet => ("dpkg-query", vec!["-W", "-f=${Status}", package]),
@@ -95,6 +122,12 @@ mod tests {
                 install_command(manager, "gpu-sdk")
                     .display()
                     .contains("gpu-sdk")
+            );
+            assert!(
+                reinstall_command(manager, &["gpu-driver".into()])
+                    .unwrap()
+                    .display()
+                    .contains("gpu-driver")
             );
         }
         assert!(

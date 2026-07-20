@@ -697,31 +697,9 @@ fn managed_driver_repair_commands(
 }
 
 fn managed_package_reinstall_commands(os: &OsInfo, packages: &[String]) -> Vec<CommandSpec> {
-    if packages.is_empty() {
-        return vec![];
-    }
-    let package_refs = packages.iter().map(String::as_str);
-    let command = match os.package_manager() {
-        crate::model::system::PackageManager::AptGet => CommandSpec::sudo(
-            "apt-get",
-            ["install", "--reinstall", "-y"]
-                .into_iter()
-                .chain(package_refs),
-        ),
-        crate::model::system::PackageManager::Dnf => {
-            CommandSpec::sudo("dnf", ["reinstall", "-y"].into_iter().chain(package_refs))
-        }
-        crate::model::system::PackageManager::Tdnf => {
-            CommandSpec::sudo("tdnf", ["reinstall", "-y"].into_iter().chain(package_refs))
-        }
-        crate::model::system::PackageManager::Zypper => CommandSpec::sudo(
-            "zypper",
-            ["--non-interactive", "install", "--force"]
-                .into_iter()
-                .chain(package_refs),
-        ),
-    };
-    vec![command]
+    package_manager::reinstall_command(os.package_manager(), packages)
+        .into_iter()
+        .collect()
 }
 
 fn cuda_symlink_repair(e: &NvidiaEvidence) -> (Vec<CommandSpec>, Vec<String>) {

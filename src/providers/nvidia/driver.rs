@@ -38,6 +38,13 @@ pub fn kernel_headers_available() -> bool {
         .exists()
 }
 
+pub fn module_metadata_available() -> bool {
+    Command::new("modinfo")
+        .arg("nvidia")
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 pub fn secure_boot_enabled() -> Option<bool> {
     if let Ok(output) = Command::new("mokutil").arg("--sb-state").output()
         && output.status.success()

@@ -14,11 +14,13 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
     let driver_version = driver::detect_version()?;
     let packages = installed_packages(os)?;
     let module_loaded = Path::new("/sys/module/nvidia").exists();
+    let module_metadata_available = driver::module_metadata_available();
     let runfile_likely = Path::new("/usr/bin/nvidia-uninstall").exists()
         || Path::new("/var/log/nvidia-installer.log").exists();
     let driver = classify_driver(
         &packages,
         driver_version.is_some() || module_loaded,
+        module_metadata_available,
         runfile_likely,
     );
     let active_toolkit = toolkit::detect_active()?;
@@ -36,6 +38,7 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
 pub fn classify_driver(
     installed: &[String],
     runtime_working: bool,
+    module_metadata_available: bool,
     runfile_likely: bool,
 ) -> DriverInstallation {
     let packages = installed
@@ -44,7 +47,7 @@ pub fn classify_driver(
         .cloned()
         .collect::<Vec<_>>();
     if packages.is_empty() {
-        return if runtime_working || runfile_likely {
+        return if runtime_working || module_metadata_available || runfile_likely {
             DriverInstallation::Unmanaged {
                 working: runtime_working,
                 runfile_likely,
@@ -58,6 +61,7 @@ pub fn classify_driver(
             || p.starts_with("nvidia-kernel-open")
             || p.starts_with("kmod-nvidia-open")
             || p.starts_with("nvidia-open-driver")
+            || p.ends_with("-open")
     });
     let proprietary_marker = packages.iter().any(|p| {
         p.starts_with("cuda-drivers")
@@ -76,7 +80,7 @@ pub fn classify_driver(
         (false, true) => DriverFlavorState::Proprietary,
         _ => DriverFlavorState::Mixed,
     };
-    if !runtime_working {
+    if !runtime_working && !module_metadata_available {
         return DriverInstallation::BrokenManaged { flavor, packages };
     }
     let compute = packages
@@ -136,6 +140,7 @@ pub fn is_nvidia_driver_package(package: &str) -> bool {
         "nvidia-open",
         "cuda-drivers",
         "nvidia-driver",
+        "nvidia-dkms",
         "nvidia-kernel",
         "kmod-nvidia",
         "nvidia-compute-",
@@ -163,16 +168,17 @@ mod tests {
     #[test]
     fn distinguishes_missing_unmanaged_scoped_broken_and_pinned_installs() {
         assert_eq!(
-            classify_driver(&[], false, false),
+            classify_driver(&[], false, false, false),
             DriverInstallation::Missing
         );
         assert!(matches!(
-            classify_driver(&[], true, true),
+            classify_driver(&[], true, false, true),
             DriverInstallation::Unmanaged { working: true, .. }
         ));
         assert!(matches!(
             classify_driver(
                 &["nvidia-driver-cuda".into(), "kmod-nvidia-open-dkms".into()],
+                true,
                 true,
                 false
             ),
@@ -183,7 +189,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            classify_driver(&["cuda-drivers".into()], false, false),
+            classify_driver(&["cuda-drivers".into()], false, false, false),
             DriverInstallation::BrokenManaged {
                 flavor: DriverFlavorState::Proprietary,
                 ..
@@ -193,6 +199,7 @@ mod tests {
             classify_driver(
                 &["cuda-drivers".into(), "nvidia-driver-pinning-580".into()],
                 true,
+                true,
                 false
             ),
             DriverInstallation::Managed {
@@ -200,5 +207,28 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn installed_open_module_waiting_for_reboot_is_managed_not_broken() {
+        let installation = classify_driver(
+            &[
+                "nvidia-driver-610-open".into(),
+                "nvidia-dkms-610-open".into(),
+                "nvidia-kernel-source-610-open".into(),
+            ],
+            false,
+            true,
+            false,
+        );
+
+        assert!(matches!(
+            installation,
+            DriverInstallation::Managed {
+                flavor: DriverFlavorState::Open,
+                ..
+            }
+        ));
+        assert!(is_nvidia_driver_package("nvidia-dkms-610-open"));
     }
 }
