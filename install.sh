@@ -137,7 +137,7 @@ case ":${PATH}:" in
     *)
         printf '\n'
         note "Add ${INSTALL_DIR} to PATH to use arc in a new shell"
-        printf '     %sexport PATH="%s:$PATH"%s\n' "$dim" "$INSTALL_DIR" "$reset"
+        printf '     %sexport PATH="%s:%s"%s\n' "$dim" "$INSTALL_DIR" "\$PATH" "$reset"
         ;;
 esac
 
