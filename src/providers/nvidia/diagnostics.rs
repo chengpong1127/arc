@@ -204,13 +204,15 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
             format!("{} ({})", e.os.display_name(), e.os.architecture),
             repository_state.as_ref().map_or_else(
                 |_| "repository target: unavailable".into(),
-                |repository| format!(
-                    "repository target: {}; family: {}; NVIDIA validated: {}; arc tested: {}",
-                    repository.distro,
-                    repository.family,
-                    yes_no(repository.nvidia_validated),
-                    yes_no(repository.arc_tested)
-                ),
+                |repository| {
+                    format!(
+                        "repository target: {}; family: {}; NVIDIA validated: {}; arc tested: {}",
+                        repository.distro,
+                        repository.family,
+                        yes_no(repository.nvidia_validated),
+                        yes_no(repository.arc_tested)
+                    )
+                },
             ),
         ],
         os_problem,

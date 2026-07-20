@@ -182,7 +182,8 @@ fn build_plan(
             package_manager::refresh_command(os.package_manager()),
         ));
         if let Some(packages) = broken_managed_packages {
-            if let Some(command) = package_manager::reinstall_command(os.package_manager(), packages)
+            if let Some(command) =
+                package_manager::reinstall_command(os.package_manager(), packages)
             {
                 steps.push(PlanStep::new(
                     "Reinstall the detected NVIDIA driver packages",
@@ -192,10 +193,7 @@ fn build_plan(
             if packages.iter().any(|package| package.contains("dkms")) {
                 steps.push(PlanStep::new(
                     "Rebuild the NVIDIA module for the running kernel",
-                    crate::model::command::CommandSpec::sudo(
-                        "dkms",
-                        ["autoinstall", "-k", kernel],
-                    ),
+                    crate::model::command::CommandSpec::sudo("dkms", ["autoinstall", "-k", kernel]),
                 ));
             }
         }
@@ -295,11 +293,7 @@ fn build_plan(
                     } else {
                         "no"
                     },
-                    if repository.arc_tested {
-                        "yes"
-                    } else {
-                        "no"
-                    }
+                    if repository.arc_tested { "yes" } else { "no" }
                 ),
             ),
             PlanDetail::new("Profile", options.profile.label()),
@@ -496,9 +490,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(commands.contains(
-            "apt-get install --reinstall -y nvidia-open nvidia-dkms-610-open"
-        ));
+        assert!(
+            commands.contains("apt-get install --reinstall -y nvidia-open nvidia-dkms-610-open")
+        );
         assert!(commands.contains("dkms autoinstall -k 6.8.0-generic"));
         assert!(commands.contains("apt-get install -y nvidia-open"));
         assert!(commands.contains("modinfo nvidia"));

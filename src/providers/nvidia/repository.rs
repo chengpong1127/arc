@@ -368,10 +368,7 @@ fn temporary_download_path(file_name: &str) -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join(format!(
-        "arc-{}-{nonce}-{file_name}",
-        std::process::id()
-    ))
+    base.join(format!("arc-{}-{nonce}-{file_name}", std::process::id()))
 }
 
 fn version_major(version: &str) -> Option<u32> {

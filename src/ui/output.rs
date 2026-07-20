@@ -137,11 +137,7 @@ pub fn operation_completed(plan: &OperationPlan) {
 
 pub fn execution_event(event: ExecutionEvent<'_>) {
     match event {
-        ExecutionEvent::Started {
-            index,
-            total,
-            step,
-        } => {
+        ExecutionEvent::Started { index, total, step } => {
             if index == 0 {
                 println!("\n  {}\n", section_label("Applying changes"));
             }

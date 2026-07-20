@@ -33,9 +33,11 @@ pub fn run(args: InstallArgs) -> Result<()> {
         return Ok(());
     }
     if plan.is_noop() {
-        output::notice(plan.reboot_message.as_deref().unwrap_or(
-            "Requested components are already installed. No changes were made.",
-        ));
+        output::notice(
+            plan.reboot_message
+                .as_deref()
+                .unwrap_or("Requested components are already installed. No changes were made."),
+        );
         return Ok(());
     }
     if !args.yes && !prompt::confirm_install()? {
