@@ -4,6 +4,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[derive(Debug, Parser)]
 #[command(name = "arc", version, about)]
 pub struct Cli {
+    /// Stream command output directly instead of using compact progress output.
+    #[arg(long, short = 'v', global = true)]
+    pub verbose: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -23,11 +26,7 @@ pub enum Command {
 }
 
 #[derive(Args, Debug)]
-pub struct StatusArgs {
-    /// Show technical driver and kernel details.
-    #[arg(long, short = 'v')]
-    pub verbose: bool,
-}
+pub struct StatusArgs {}
 
 #[derive(Args, Debug)]
 pub struct UpgradeArgs {
@@ -112,10 +111,22 @@ mod tests {
     fn status_accepts_short_and_long_verbose_flags() {
         for flag in ["-v", "--verbose"] {
             let cli = Cli::try_parse_from(["arc", "status", flag]).unwrap();
-            assert!(matches!(
-                cli.command,
-                Command::Status(StatusArgs { verbose: true })
-            ));
+            assert!(cli.verbose);
+            assert!(matches!(cli.command, Command::Status(StatusArgs {})));
         }
+    }
+
+    #[test]
+    fn verbose_is_global_for_mutating_commands() {
+        assert!(
+            Cli::try_parse_from(["arc", "-v", "install", "--dry-run"])
+                .unwrap()
+                .verbose
+        );
+        assert!(
+            Cli::try_parse_from(["arc", "uninstall", "-v", "-y"])
+                .unwrap()
+                .verbose
+        );
     }
 }

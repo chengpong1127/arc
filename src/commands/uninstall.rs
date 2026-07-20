@@ -10,7 +10,7 @@ use crate::{
     ui::{output, prompt},
 };
 
-pub fn run(args: UninstallArgs) -> Result<()> {
+pub fn run(args: UninstallArgs, verbose: bool) -> Result<()> {
     let system = os::detect()?;
     let status = NvidiaProvider.inspect()?;
     let mut plan = uninstall::plan(&system, &status)?;
@@ -24,12 +24,12 @@ pub fn run(args: UninstallArgs) -> Result<()> {
         output::cancelled("Uninstall");
         return Ok(());
     }
-    command::ensure_execution_privileges(&plan)?;
-    command::execute_plan_with_reporter(
-        &command::SystemCommandRunner,
-        &plan,
-        output::execution_event,
-    )?;
+    let mut reporter = output::ExecutionReporter::new(verbose);
+    let execution =
+        command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
+            reporter.report(event)
+        })?;
     output::operation_completed(&plan);
+    output::execution_log(execution.log_path.as_deref());
     Ok(())
 }

@@ -1,6 +1,7 @@
-use std::fmt::Write;
+use std::{fmt::Write, path::Path, time::Duration};
 
 use console::style;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::model::{
     environment::{
@@ -130,31 +131,93 @@ pub fn operation_completed(plan: &OperationPlan) {
     println!();
 }
 
-pub fn execution_event(event: ExecutionEvent<'_>) {
-    match event {
-        ExecutionEvent::Started { index, total, step } => {
-            if index == 0 {
-                println!("\n  {}\n", section_label("Applying changes"));
-            }
-            println!(
-                "  {}  {}  {}",
-                style("◆").cyan(),
-                style(format!("{}/{}", index + 1, total)).cyan().bold(),
-                style(&step.description).bold()
-            );
+pub struct ExecutionReporter {
+    verbose: bool,
+    progress: Option<ProgressBar>,
+}
+
+impl ExecutionReporter {
+    pub fn new(verbose: bool) -> Self {
+        Self {
+            verbose,
+            progress: None,
         }
-        ExecutionEvent::Completed { index, total, step } => println!(
-            "  {}  {}  {}\n",
-            style("✓").green().bold(),
-            style(format!("{}/{}", index + 1, total)).dim(),
-            style(format!("{} complete", step.description)).green()
-        ),
-        ExecutionEvent::Failed { index, total, step } => println!(
-            "  {}  {}  {}\n",
-            style("✗").red().bold(),
-            style(format!("{}/{}", index + 1, total)).dim(),
-            style(format!("{} failed", step.description)).red().bold()
-        ),
+    }
+
+    pub fn report(&mut self, event: ExecutionEvent<'_>) {
+        match event {
+            ExecutionEvent::Started { index, total, step } => {
+                if index == 0 {
+                    println!("\n  {}\n", section_label("Applying changes"));
+                }
+                if self.verbose {
+                    println!(
+                        "  {}  {}  {}",
+                        style("◆").cyan(),
+                        style(format!("{}/{}", index + 1, total)).cyan().bold(),
+                        style(&step.description).bold()
+                    );
+                } else {
+                    let progress =
+                        ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout());
+                    progress.set_style(
+                        ProgressStyle::with_template(
+                            "  {spinner:.cyan}  {prefix:.cyan.bold} {msg:.bold}",
+                        )
+                        .expect("static progress template must be valid")
+                        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+                    );
+                    progress.set_prefix(format!("{}/{}", index + 1, total));
+                    progress.set_message(format!("{}...", step.description));
+                    if progress.is_hidden() {
+                        println!("  {}/{} {}...", index + 1, total, step.description);
+                    } else {
+                        progress.enable_steady_tick(Duration::from_millis(80));
+                        self.progress = Some(progress);
+                    }
+                }
+            }
+            ExecutionEvent::Completed { index, total, step } => {
+                self.clear();
+                println!(
+                    "  {}  {}  {}",
+                    style("✓").green().bold(),
+                    style(format!("{}/{}", index + 1, total)).dim(),
+                    style(format!("{} complete", step.description)).green()
+                );
+            }
+            ExecutionEvent::Failed { index, total, step } => {
+                self.clear();
+                println!(
+                    "  {}  {}  {}\n",
+                    style("✗").red().bold(),
+                    style(format!("{}/{}", index + 1, total)).dim(),
+                    style(format!("{} failed", step.description)).red().bold()
+                );
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        if let Some(progress) = self.progress.take() {
+            progress.finish_and_clear();
+        }
+    }
+}
+
+impl Drop for ExecutionReporter {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+pub fn execution_log(path: Option<&Path>) {
+    if let Some(path) = path {
+        println!(
+            "  {}  Full command log: {}\n",
+            style("•").dim(),
+            style(path.display()).dim()
+        );
     }
 }
 

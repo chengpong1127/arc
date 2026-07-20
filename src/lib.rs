@@ -27,18 +27,25 @@ impl ExitStatus {
 pub const EXECUTION_FAILURE_EXIT_CODE: u8 = 2;
 
 pub fn run(cli: Cli) -> Result<ExitStatus> {
+    let verbose = cli.verbose;
     match cli.command {
-        Command::Install(args) => commands::install::run(args).map(|_| ExitStatus::Success),
-        Command::Status(args) => commands::status::run(args).map(|_| ExitStatus::Success),
-        Command::Upgrade(args) => commands::upgrade::run(args).map(|outcome| match outcome {
-            commands::upgrade::UpgradeOutcome::Success => ExitStatus::Success,
-            commands::upgrade::UpgradeOutcome::Unavailable => ExitStatus::UpgradeUnavailable,
-        }),
+        Command::Install(args) => {
+            commands::install::run(args, verbose).map(|_| ExitStatus::Success)
+        }
+        Command::Status(args) => commands::status::run(args, verbose).map(|_| ExitStatus::Success),
+        Command::Upgrade(args) => {
+            commands::upgrade::run(args, verbose).map(|outcome| match outcome {
+                commands::upgrade::UpgradeOutcome::Success => ExitStatus::Success,
+                commands::upgrade::UpgradeOutcome::Unavailable => ExitStatus::UpgradeUnavailable,
+            })
+        }
         Command::Doctor(args) => commands::doctor::run(args).map(|outcome| match outcome {
             commands::doctor::DoctorOutcome::Healthy => ExitStatus::Success,
             commands::doctor::DoctorOutcome::ErrorsFound => ExitStatus::DiagnosticErrors,
         }),
-        Command::Uninstall(args) => commands::uninstall::run(args).map(|_| ExitStatus::Success),
+        Command::Uninstall(args) => {
+            commands::uninstall::run(args, verbose).map(|_| ExitStatus::Success)
+        }
     }
 }
 

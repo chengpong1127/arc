@@ -13,7 +13,7 @@ pub enum UpgradeOutcome {
     Unavailable,
 }
 
-pub fn run(args: UpgradeArgs) -> Result<UpgradeOutcome> {
+pub fn run(args: UpgradeArgs, verbose: bool) -> Result<UpgradeOutcome> {
     let options = UpgradeOptions::from_component_flags(args.driver, args.toolkit);
     let mut plan = match upgrade::plan(&os::detect()?, &options) {
         Ok(plan) => plan,
@@ -43,12 +43,12 @@ pub fn run(args: UpgradeArgs) -> Result<UpgradeOutcome> {
         output::cancelled("Upgrade");
         return Ok(UpgradeOutcome::Success);
     }
-    command::ensure_execution_privileges(&plan)?;
-    command::execute_plan_with_reporter(
-        &command::SystemCommandRunner,
-        &plan,
-        output::execution_event,
-    )?;
+    let mut reporter = output::ExecutionReporter::new(verbose);
+    let execution =
+        command::execute_plan(&command::SystemCommandRunner, &plan, verbose, |event| {
+            reporter.report(event)
+        })?;
     output::operation_completed(&plan);
+    output::execution_log(execution.log_path.as_deref());
     Ok(UpgradeOutcome::Success)
 }
