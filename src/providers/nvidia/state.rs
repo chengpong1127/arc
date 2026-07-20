@@ -3,9 +3,7 @@ use std::{path::Path, process::Command};
 use anyhow::{Context, Result};
 
 use crate::model::{
-    environment::{
-        DriverFlavorState, DriverInstallation, DriverPackageScope, ProviderStatus, ToolkitStatus,
-    },
+    environment::{DriverFlavorState, DriverInstallation, DriverPackageScope, ProviderStatus},
     system::OsInfo,
 };
 
@@ -23,19 +21,15 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
         driver_version.is_some() || module_loaded,
         runfile_likely,
     );
-    let toolkits = toolkit::detect_version()?
-        .map(|version| ToolkitStatus {
-            name: "CUDA Toolkit".to_owned(),
-            version,
-        })
-        .into_iter()
-        .collect();
+    let active_toolkit = toolkit::detect_active()?;
+    let toolkits = toolkit::managed_status(&packages, active_toolkit.as_ref());
     Ok(ProviderStatus {
         vendor: crate::model::device::GpuVendor::Nvidia,
         devices: devices.into_iter().map(Into::into).collect(),
         driver,
         driver_version,
         toolkits,
+        active_toolkit,
     })
 }
 

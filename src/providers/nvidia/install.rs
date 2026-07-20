@@ -143,7 +143,10 @@ fn build_plan(
         && matches!(&status.driver, DriverInstallation::Managed { branch, .. } if *branch != policy.branch);
     let transition = current_flavor.is_some_and(|from| from != policy.flavor) || branch_transition;
     let toolkit_package = requested_toolkit(options)?;
-    let current_toolkit = status.toolkits.first().map(|value| value.version.as_str());
+    let current_toolkit = status
+        .toolkits
+        .first()
+        .and_then(|value| value.version.as_deref());
     let install_toolkit = toolkit_package.as_deref().is_some_and(|package| {
         toolkit_install_needed(package, current_toolkit, toolkit_package_installed)
     });
@@ -254,6 +257,23 @@ fn build_plan(
             PlanDetail::new("Kernel", kernel),
             PlanDetail::new("Package manager", os.package_manager().to_string()),
             PlanDetail::new("Repository", repository.base_url.clone()),
+            PlanDetail::new(
+                "Release validation",
+                format!(
+                    "repository-compatible {}; NVIDIA validated: {}; cudaenv tested: {}",
+                    repository.family,
+                    if repository.nvidia_validated {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if repository.cudaenv_tested {
+                        "yes"
+                    } else {
+                        "no"
+                    }
+                ),
+            ),
             PlanDetail::new("Profile", options.profile.label()),
             PlanDetail::new("Existing driver", status.driver.description()),
             PlanDetail::new("Driver", driver_detail),
@@ -319,7 +339,7 @@ mod tests {
     use super::*;
     use crate::model::{
         device::GpuVendor,
-        environment::{DriverPackageScope, ToolkitStatus},
+        environment::{DriverPackageScope, ToolkitSource, ToolkitStatus},
         system::Distribution,
     };
     use crate::providers::nvidia::gpu::Generation;
@@ -347,11 +367,16 @@ mod tests {
             driver_version: Some("580.65.06".into()),
             toolkits: toolkit_version
                 .map(|v| ToolkitStatus {
-                    name: "CUDA Toolkit".into(),
-                    version: v.into(),
+                    name: "System-managed CUDA Toolkit".into(),
+                    version: Some(v.into()),
+                    executable_path: Some(format!("/usr/local/cuda-{v}/bin/nvcc")),
+                    source: ToolkitSource::SystemPackageManager,
+                    packages: vec![format!("cuda-toolkit-{}", v.replace('.', "-"))],
+                    manageable: true,
                 })
                 .into_iter()
                 .collect(),
+            active_toolkit: None,
         }
     }
     fn managed(flavor: DriverFlavorState, branch: Option<u32>) -> DriverInstallation {
@@ -384,6 +409,35 @@ mod tests {
         )
         .unwrap();
         assert!(plan.is_noop());
+    }
+
+    #[test]
+    fn custom_active_nvcc_does_not_suppress_system_toolkit_install() {
+        let mut current = status(managed(DriverFlavorState::Open, None), None);
+        current.active_toolkit = Some(ToolkitStatus {
+            name: "Active nvcc".into(),
+            version: Some("13.1".into()),
+            executable_path: Some("/opt/conda/envs/cuda/bin/nvcc".into()),
+            source: ToolkitSource::ActivePath,
+            packages: vec![],
+            manageable: false,
+        });
+        let plan = build_plan(
+            &os(),
+            &options(InstallProfile::CudaDevelopment, Some("13.1")),
+            "6.8.0-generic",
+            &[gpu(Generation::TuringOrNewer)],
+            &current,
+            &repository::resolve(&os()).unwrap(),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(plan.steps.iter().any(|step| {
+            step.command
+                .display()
+                .contains("apt-get install -y cuda-toolkit-13-1")
+        }));
     }
     #[test]
     fn legacy_plan_pins_r580_and_rejects_cuda_13() {

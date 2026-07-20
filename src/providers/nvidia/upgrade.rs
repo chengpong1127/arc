@@ -300,7 +300,7 @@ pub fn detect_state(
                     status
                         .toolkits
                         .first()
-                        .map(|toolkit| toolkit.version.clone())
+                        .and_then(|toolkit| toolkit.version.clone())
                 }),
             });
         }
@@ -526,7 +526,8 @@ pub fn build_plan(
             PlanDetail::new("OS / architecture", format!("{} / {}", os.display_name(), os.architecture)),
             PlanDetail::new("Kernel", &current.kernel),
             PlanDetail::new("Package manager", os.package_manager().to_string()),
-            PlanDetail::new("Repository", repository.base_url),
+            PlanDetail::new("Repository", repository.base_url.clone()),
+            PlanDetail::new("Release validation", format!("repository-compatible {}; NVIDIA validated: {}; cudaenv tested: {}", repository.family, if repository.nvidia_validated { "yes" } else { "no" }, if repository.cudaenv_tested { "yes" } else { "no" })),
             PlanDetail::new("GPU policy", if legacy { "Maxwell/Pascal/Volta: proprietary R580, CUDA 12.x maximum" } else { "Turing or newer: preserve installed flavor, latest compatible branch" }),
             PlanDetail::new("Current driver", format!("{}; {flavor}; {branch}; package version {driver_current}; loaded version {}", current.status.driver.description(), current.status.driver_version.as_deref().unwrap_or("not loaded"))),
             PlanDetail::new("Target driver", driver_detail),
@@ -802,15 +803,15 @@ fn toolkit_versions(toolkits: &[ToolkitInstall]) -> String {
 
 fn driver_upgrade_command(os: &OsInfo, package: &str, _branch: Option<u32>) -> CommandSpec {
     match os.package_manager() {
-        PackageManager::AptGet => CommandSpec::sudo("apt-get", ["dist-upgrade", "-y"]),
-        PackageManager::Dnf if recipe::is_modular_dnf(os) => {
-            CommandSpec::sudo("dnf", ["update", "-y"])
+        PackageManager::AptGet => {
+            CommandSpec::sudo("apt-get", ["install", "--only-upgrade", "-y", package])
         }
-        PackageManager::Dnf => CommandSpec::sudo("dnf", ["update", "-y", package]),
-        PackageManager::Tdnf => CommandSpec::sudo("tdnf", ["update", "-y"]),
-        PackageManager::Zypper => {
-            CommandSpec::sudo("zypper", ["--non-interactive", "update", "--details"])
-        }
+        PackageManager::Dnf => CommandSpec::sudo("dnf", ["upgrade", "-y", package]),
+        PackageManager::Tdnf => CommandSpec::sudo("tdnf", ["update", "-y", package]),
+        PackageManager::Zypper => CommandSpec::sudo(
+            "zypper",
+            ["--non-interactive", "update", "--details", package],
+        ),
     }
 }
 
@@ -1066,6 +1067,7 @@ mod tests {
                 driver: installation,
                 driver_version: driver.then(|| "580.65.06".into()),
                 toolkits: vec![],
+                active_toolkit: None,
             },
             driver_package: driver.then(|| PackageRecord {
                 name: if flavor == DriverFlavorState::Open {
@@ -1181,6 +1183,38 @@ mod tests {
             plan.details
                 .iter()
                 .any(|d| d.value.contains("absent — skipped"))
+        );
+    }
+
+    #[test]
+    fn active_nvcc_without_inventory_is_not_upgraded() {
+        let query = MockQuery::default();
+        let mut current = state(DriverFlavorState::Open, true, vec![]);
+        current.status.active_toolkit = Some(crate::model::environment::ToolkitStatus {
+            name: "Active nvcc".into(),
+            version: Some("12.8".into()),
+            executable_path: Some("/custom/cuda/bin/nvcc".into()),
+            source: crate::model::environment::ToolkitSource::ActivePath,
+            packages: vec![],
+            manageable: false,
+        });
+        let plan = build_plan(
+            &os(Distribution::Ubuntu),
+            &UpgradeOptions {
+                driver: false,
+                toolkit: true,
+            },
+            &[gpu(Generation::TuringOrNewer)],
+            &current,
+            &query,
+        )
+        .unwrap();
+        assert!(plan.is_noop());
+        assert!(
+            plan.details
+                .iter()
+                .any(|detail| detail.label == "Target CUDA Toolkit"
+                    && detail.value.contains("absent"))
         );
     }
 
@@ -1377,43 +1411,54 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_documented_driver_update_commands() {
+    fn driver_updates_are_always_scoped_to_the_detected_package() {
         let cases = [
             (
                 OsInfo {
                     version_id: "24.04".into(),
                     ..os(Distribution::Ubuntu)
                 },
-                "sudo apt-get dist-upgrade -y",
+                "sudo apt-get install --only-upgrade -y nvidia-open",
             ),
             (
                 OsInfo {
                     version_id: "9.7".into(),
                     ..os(Distribution::Rhel)
                 },
-                "sudo dnf update -y",
+                "sudo dnf upgrade -y nvidia-open",
             ),
             (
                 OsInfo {
                     version_id: "44".into(),
                     ..os(Distribution::Fedora)
                 },
-                "sudo dnf update -y nvidia-open",
+                "sudo dnf upgrade -y nvidia-open",
             ),
-            (os(Distribution::AzureLinux), "sudo tdnf update -y"),
+            (
+                os(Distribution::AzureLinux),
+                "sudo tdnf update -y nvidia-open",
+            ),
             (
                 OsInfo {
                     version_id: "15.6".into(),
                     ..os(Distribution::OpenSuse)
                 },
-                "sudo zypper --non-interactive update --details",
+                "sudo zypper --non-interactive update --details nvidia-open",
             ),
         ];
         for (system, expected) in cases {
-            assert_eq!(
-                driver_upgrade_command(&system, "nvidia-open", None).display(),
-                expected
-            );
+            let command = driver_upgrade_command(&system, "nvidia-open", None).display();
+            assert_eq!(command, expected);
+            assert!(command.contains("nvidia-open"));
+            for forbidden in [
+                "apt-get dist-upgrade",
+                "dnf update -y\n",
+                "dnf update -y$",
+                "tdnf update -y\n",
+                "zypper --non-interactive update --details$",
+            ] {
+                assert!(!command.contains(forbidden), "unscoped command: {command}");
+            }
         }
     }
 

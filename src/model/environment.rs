@@ -8,7 +8,17 @@ use crate::model::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolkitStatus {
     pub name: String,
-    pub version: String,
+    pub version: Option<String>,
+    pub executable_path: Option<String>,
+    pub source: ToolkitSource,
+    pub packages: Vec<String>,
+    pub manageable: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolkitSource {
+    SystemPackageManager,
+    ActivePath,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,7 +27,10 @@ pub struct ProviderStatus {
     pub devices: Vec<GpuDevice>,
     pub driver: DriverInstallation,
     pub driver_version: Option<String>,
+    /// Toolkit installations proven by the system package-manager inventory.
     pub toolkits: Vec<ToolkitStatus>,
+    /// The nvcc selected by PATH, which may be Conda-, module-, or user-managed.
+    pub active_toolkit: Option<ToolkitStatus>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,10 +67,6 @@ pub enum DriverInstallation {
 }
 
 impl DriverInstallation {
-    pub fn is_managed(&self) -> bool {
-        matches!(self, Self::Managed { .. } | Self::BrokenManaged { .. })
-    }
-
     pub fn flavor(&self) -> Option<DriverFlavorState> {
         match self {
             Self::Managed { flavor, .. } | Self::BrokenManaged { flavor, .. } => Some(*flavor),
@@ -184,6 +193,7 @@ pub enum FixId {
     InspectHardware,
     InstallKernelHeaders,
     InstallDriver,
+    RepairManagedDriver,
     RebuildDkms,
     ReinstallDriverLibraries,
     InstallToolkit,

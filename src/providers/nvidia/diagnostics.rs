@@ -61,8 +61,11 @@ pub struct NvidiaEvidence {
     pub secure_boot_enabled: Option<bool>,
     pub dkms_status: Option<String>,
     pub driver_version: Option<String>,
-    pub toolkit_package_installed: bool,
+    pub toolkit_packages: Vec<String>,
+    pub managed_toolkit_version: Option<String>,
+    pub managed_nvcc: CommandEvidence,
     pub nvcc: CommandEvidence,
+    pub nvcc_path: Option<String>,
     pub nvcc_version: Option<String>,
     pub cuda_symlink: CudaSymlinkState,
     pub installed_cuda_versions: Vec<String>,
@@ -70,7 +73,7 @@ pub struct NvidiaEvidence {
 
 impl NvidiaEvidence {
     fn toolkit_installed(&self) -> bool {
-        self.toolkit_package_installed || !self.installed_cuda_versions.is_empty()
+        !self.toolkit_packages.is_empty()
     }
 }
 
@@ -88,6 +91,11 @@ pub fn collect_evidence() -> Result<NvidiaEvidence> {
         nvcc = command_evidence("/usr/local/cuda/bin/nvcc", &["--version"]);
     }
     let installed_cuda_versions = installed_cuda_versions();
+    let managed = status.toolkits.first();
+    let managed_nvcc = managed
+        .and_then(|toolkit| toolkit.executable_path.as_deref())
+        .map(|path| command_evidence(path, &["--version"]))
+        .unwrap_or_default();
     Ok(NvidiaEvidence {
         gpus: gpu::detect()?,
         driver: status.driver,
@@ -99,10 +107,15 @@ pub fn collect_evidence() -> Result<NvidiaEvidence> {
         secure_boot_enabled: driver::secure_boot_enabled(),
         dkms_status: command_optional_stdout("dkms", &["status"]),
         driver_version: status.driver_version,
-        toolkit_package_installed: package_manager::is_installed(
-            os.package_manager(),
-            "cuda-toolkit",
-        )?,
+        toolkit_packages: managed
+            .map(|toolkit| toolkit.packages.clone())
+            .unwrap_or_default(),
+        managed_toolkit_version: managed.and_then(|toolkit| toolkit.version.clone()),
+        managed_nvcc,
+        nvcc_path: status
+            .active_toolkit
+            .as_ref()
+            .and_then(|toolkit| toolkit.executable_path.clone()),
         nvcc_version: parse_nvcc_version(&nvcc.stdout).map(str::to_owned),
         nvcc,
         cuda_symlink: cuda_symlink_state(Path::new("/usr/local/cuda")),
@@ -129,6 +142,7 @@ pub fn diagnose(e: NvidiaEvidence, profile: DoctorProfile) -> Result<Diagnostics
 
 pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck> {
     let gpu_ok = !e.gpus.is_empty();
+    let repository_state = repository::resolve(&e.os);
     let os_resolution = repository::resolve(&e.os)
         .and_then(|_| recipe::validate_release(&e.os))
         .and_then(|_| e.os.ensure_driver_installable("NVIDIA"))
@@ -137,7 +151,7 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
                 &e.os,
                 &e.gpus,
                 super::driver::DriverPreference::Auto,
-                e.nvcc_version.as_deref(),
+                e.managed_toolkit_version.as_deref(),
                 profile == DoctorProfile::CudaDevelopment,
             )
             .map(|_| ())
@@ -160,17 +174,46 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
         vec![],
         vec![FixId::InspectHardware],
     )];
+    let release_warning = repository_state.as_ref().ok().and_then(|repository| {
+        (!repository.nvidia_validated || !repository.cudaenv_tested).then(|| {
+            format!(
+                "Repository-compatible via {}, but this exact release is{} NVIDIA-validated and{} explicitly tested by cudaenv.",
+                repository.distro,
+                if repository.nvidia_validated { "" } else { " not" },
+                if repository.cudaenv_tested { "" } else { " not" }
+            )
+        })
+    });
+    let os_problem = os_resolution
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .or_else(|| release_warning.clone());
     result.push(check(
         DiagnosticId::OperatingSystem,
         DiagnosticSection::OperatingSystem,
         "Supported OS/GPU policy",
-        if os_resolution.is_ok() {
-            DiagnosticStatus::Pass
-        } else {
+        if os_resolution.is_err() {
             DiagnosticStatus::Error
+        } else if release_warning.is_some() {
+            DiagnosticStatus::Warning
+        } else {
+            DiagnosticStatus::Pass
         },
-        vec![format!("{} ({})", e.os.display_name(), e.os.architecture)],
-        os_resolution.err().map(|error| error.to_string()),
+        vec![
+            format!("{} ({})", e.os.display_name(), e.os.architecture),
+            repository_state.as_ref().map_or_else(
+                |_| "repository target: unavailable".into(),
+                |repository| format!(
+                    "repository target: {}; family: {}; NVIDIA validated: {}; cudaenv tested: {}",
+                    repository.distro,
+                    repository.family,
+                    yes_no(repository.nvidia_validated),
+                    yes_no(repository.cudaenv_tested)
+                ),
+            ),
+        ],
+        os_problem,
         vec![DiagnosticId::NvidiaGpu],
         vec![],
     ));
@@ -212,7 +255,10 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
         vec![e.driver.description()],
         driver_problem,
         vec![DiagnosticId::NvidiaGpu],
-        vec![FixId::InstallDriver],
+        match e.driver {
+            DriverInstallation::BrokenManaged { .. } => vec![FixId::RepairManagedDriver],
+            _ => vec![FixId::InstallDriver],
+        },
     ));
     push_dependent(
         &mut result,
@@ -296,8 +342,8 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
             missing_status
         },
         vec![format!(
-            "cuda-toolkit package: {}; installed versions: {}",
-            yes_no(e.toolkit_package_installed),
+            "system package(s): {}; /usr/local versions: {}",
+            list_or_none(&e.toolkit_packages),
             list_or_none(&e.installed_cuda_versions)
         )],
         (!toolkit_present).then(|| {
@@ -321,14 +367,31 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
             DiagnosticId::Nvcc,
             DiagnosticSection::CudaToolkit,
             "nvcc available",
-            if e.nvcc.exists && e.nvcc.succeeded && e.nvcc_version.is_some() {
+            if e.managed_nvcc.exists
+                && e.managed_nvcc.succeeded
+                && e.managed_toolkit_version.is_some()
+            {
                 DiagnosticStatus::Pass
             } else {
                 DiagnosticStatus::Error
             },
-            command_evidence_lines("nvcc", &e.nvcc),
-            (!(e.nvcc.exists && e.nvcc.succeeded && e.nvcc_version.is_some()))
-                .then(|| "A Toolkit is present, but nvcc is missing or broken.".into()),
+            {
+                let mut lines = command_evidence_lines("system-managed nvcc", &e.managed_nvcc);
+                lines.push(format!(
+                    "active nvcc: {}{}",
+                    e.nvcc_path.as_deref().unwrap_or("not found on PATH"),
+                    e.nvcc_version
+                        .as_deref()
+                        .map(|version| format!(" (CUDA {version})"))
+                        .unwrap_or_default()
+                ));
+                lines.extend(command_evidence_lines("active nvcc", &e.nvcc));
+                lines
+            },
+            (!(e.managed_nvcc.exists
+                && e.managed_nvcc.succeeded
+                && e.managed_toolkit_version.is_some()))
+            .then(|| "System Toolkit packages are present, but their nvcc is missing or broken; an unrelated active nvcc does not satisfy this check.".into()),
             vec![DiagnosticId::ToolkitInstall],
             vec![FixId::InstallToolkit, FixId::DebugToolkit],
         ),
@@ -356,9 +419,9 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
     let compatibility = e
         .driver_version
         .as_deref()
-        .zip(e.nvcc_version.as_deref())
+        .zip(e.managed_toolkit_version.as_deref())
         .and_then(|(driver, toolkit)| compatibility::evaluate(driver, toolkit));
-    push_dependent(&mut result, check(DiagnosticId::DriverToolkitCompatibility, DiagnosticSection::CudaToolkit, "Driver supports CUDA Toolkit", match compatibility { Some(Compatibility::Incompatible) => DiagnosticStatus::Error, Some(Compatibility::MinorVersionCompatible) => DiagnosticStatus::Warning, _ => DiagnosticStatus::Pass }, vec![format!("driver: {}; toolkit: {}; compatibility: {:?}", e.driver_version.as_deref().unwrap_or("unknown"), e.nvcc_version.as_deref().unwrap_or("unknown"), compatibility)], (compatibility == Some(Compatibility::Incompatible)).then(|| "The complete driver version is below the Toolkit's minimum compatibility version.".into()), vec![DiagnosticId::NvidiaSmi, DiagnosticId::Nvcc], vec![FixId::UpgradeDriver, FixId::Reboot]));
+    push_dependent(&mut result, check(DiagnosticId::DriverToolkitCompatibility, DiagnosticSection::CudaToolkit, "Driver supports CUDA Toolkit", match compatibility { Some(Compatibility::Incompatible) => DiagnosticStatus::Error, Some(Compatibility::MinorVersionCompatible) => DiagnosticStatus::Warning, _ => DiagnosticStatus::Pass }, vec![format!("driver: {}; system Toolkit: {}; compatibility: {:?}", e.driver_version.as_deref().unwrap_or("unknown"), e.managed_toolkit_version.as_deref().unwrap_or("unknown"), compatibility)], (compatibility == Some(Compatibility::Incompatible)).then(|| "The complete driver version is below the Toolkit's minimum compatibility version.".into()), vec![DiagnosticId::NvidiaSmi, DiagnosticId::Nvcc], vec![FixId::UpgradeDriver, FixId::Reboot]));
     result
 }
 
@@ -418,12 +481,27 @@ pub fn fix_plan(
         causes.push(cause("The OS/GPU combination is unsupported", vec![]));
     }
     if failed(DiagnosticId::DriverPackage) {
-        causes.push(cause(
-            "The NVIDIA driver installation is missing or broken",
-            vec![FixId::InstallDriver],
-        ));
+        let (title, fixes) = match e.driver {
+            DriverInstallation::BrokenManaged { .. } => (
+                "The managed NVIDIA driver installation is broken",
+                vec![FixId::RepairManagedDriver, FixId::Reboot],
+            ),
+            DriverInstallation::Missing => (
+                "The NVIDIA driver installation is missing",
+                vec![FixId::InstallDriver],
+            ),
+            DriverInstallation::Unmanaged { .. } => (
+                "The unmanaged NVIDIA driver needs its original maintenance method",
+                vec![FixId::InstallDriver],
+            ),
+            DriverInstallation::Managed { .. } => unreachable!(),
+        };
+        causes.push(cause(title, fixes));
     }
-    if e.driver.is_managed() && !e.nvidia_module_loaded && !e.matching_kernel_headers {
+    if matches!(e.driver, DriverInstallation::Managed { .. })
+        && !e.nvidia_module_loaded
+        && !e.matching_kernel_headers
+    {
         causes.push(cause(
             "Headers for the running kernel are missing",
             vec![
@@ -433,7 +511,7 @@ pub fn fix_plan(
             ],
         ));
     }
-    if version_mismatch(e) {
+    if version_mismatch(e) && matches!(e.driver, DriverInstallation::Managed { .. }) {
         causes.push(cause(
             "NVIDIA driver and userspace libraries do not match",
             vec![FixId::ReinstallDriverLibraries, FixId::Reboot],
@@ -457,6 +535,12 @@ pub fn fix_plan(
             vec![FixId::UpgradeDriver, FixId::Reboot],
         ));
     }
+    if failed(DiagnosticId::CudaSymlink) && e.toolkit_installed() {
+        causes.push(cause(
+            "The system CUDA Toolkit symlink is invalid",
+            vec![FixId::RepairCudaSymlink],
+        ));
+    }
     Ok(FixPlan::new(causes, available_fixes(e)?))
 }
 fn cause(title: &str, fixes: Vec<FixId>) -> DiagnosticCause {
@@ -469,6 +553,28 @@ fn cause(title: &str, fixes: Vec<FixId>) -> DiagnosticCause {
 }
 fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
     let prerequisites = recipe::prerequisites(&e.os, &e.kernel_release).unwrap_or_default();
+    let (install_driver_commands, install_driver_steps) = match &e.driver {
+        DriverInstallation::Unmanaged { runfile_likely, .. } => (
+            vec![],
+            vec![format!(
+                "Do not use cudaenv to overwrite this installation. Repair or remove it with {} and then rerun cudaenv doctor.",
+                if *runfile_likely {
+                    "the original NVIDIA runfile installer (normally `sudo nvidia-uninstall`)"
+                } else {
+                    "the original installation method"
+                }
+            )],
+        ),
+        _ => (
+            vec![CommandSpec::new(
+                "cudaenv",
+                ["install", "--profile", "model-training", "--dry-run"],
+            )],
+            vec![],
+        ),
+    };
+    let repair_commands = managed_driver_repair_commands(e, &prerequisites);
+    let (symlink_commands, symlink_steps) = cuda_symlink_repair(e);
     Ok(vec![
         fix(
             FixId::InspectHardware,
@@ -482,13 +588,17 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             prerequisites,
             10,
         ),
-        fix(
+        fix_with_manual(
             FixId::InstallDriver,
-            "Review the normal cudaenv installation plan",
-            vec![CommandSpec::new(
-                "cudaenv",
-                ["install", "--profile", "model-training", "--dry-run"],
-            )],
+            "Install a missing managed driver or handle an unmanaged driver manually",
+            install_driver_commands,
+            install_driver_steps,
+            20,
+        ),
+        fix(
+            FixId::RepairManagedDriver,
+            "Reinstall the exact managed NVIDIA packages and rebuild the running-kernel module",
+            repair_commands,
             20,
         ),
         fix(
@@ -503,10 +613,7 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         fix(
             FixId::ReinstallDriverLibraries,
             "Reinstall the managed NVIDIA packages",
-            vec![CommandSpec::new(
-                "cudaenv",
-                ["install", "--profile", "model-training", "--dry-run"],
-            )],
+            managed_package_reinstall_commands(&e.os, driver_packages(&e.driver)),
             30,
         ),
         fix(
@@ -527,10 +634,11 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
             )],
             50,
         ),
-        fix(
+        fix_with_manual(
             FixId::RepairCudaSymlink,
             "Repair /usr/local/cuda",
-            vec![],
+            symlink_commands,
+            symlink_steps,
             60,
         ),
         fix(
@@ -559,12 +667,96 @@ fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
         ),
     ])
 }
+
+fn driver_packages(driver: &DriverInstallation) -> &[String] {
+    match driver {
+        DriverInstallation::Managed { packages, .. }
+        | DriverInstallation::BrokenManaged { packages, .. } => packages,
+        DriverInstallation::Missing | DriverInstallation::Unmanaged { .. } => &[],
+    }
+}
+
+fn managed_driver_repair_commands(
+    e: &NvidiaEvidence,
+    prerequisites: &[CommandSpec],
+) -> Vec<CommandSpec> {
+    let DriverInstallation::BrokenManaged { packages, .. } = &e.driver else {
+        return vec![];
+    };
+    let mut commands = prerequisites.to_vec();
+    commands.push(package_manager::refresh_command(e.os.package_manager()));
+    commands.extend(managed_package_reinstall_commands(&e.os, packages));
+    if e.dkms_status.is_some() || packages.iter().any(|package| package.contains("dkms")) {
+        commands.push(CommandSpec::sudo(
+            "dkms",
+            ["autoinstall", "-k", &e.kernel_release],
+        ));
+    }
+    commands.push(CommandSpec::new("modinfo", ["nvidia"]));
+    commands
+}
+
+fn managed_package_reinstall_commands(os: &OsInfo, packages: &[String]) -> Vec<CommandSpec> {
+    if packages.is_empty() {
+        return vec![];
+    }
+    let package_refs = packages.iter().map(String::as_str);
+    let command = match os.package_manager() {
+        crate::model::system::PackageManager::AptGet => CommandSpec::sudo(
+            "apt-get",
+            ["install", "--reinstall", "-y"]
+                .into_iter()
+                .chain(package_refs),
+        ),
+        crate::model::system::PackageManager::Dnf => {
+            CommandSpec::sudo("dnf", ["reinstall", "-y"].into_iter().chain(package_refs))
+        }
+        crate::model::system::PackageManager::Tdnf => {
+            CommandSpec::sudo("tdnf", ["reinstall", "-y"].into_iter().chain(package_refs))
+        }
+        crate::model::system::PackageManager::Zypper => CommandSpec::sudo(
+            "zypper",
+            ["--non-interactive", "install", "--force"]
+                .into_iter()
+                .chain(package_refs),
+        ),
+    };
+    vec![command]
+}
+
+fn cuda_symlink_repair(e: &NvidiaEvidence) -> (Vec<CommandSpec>, Vec<String>) {
+    let Some(version) = e.installed_cuda_versions.last() else {
+        return (
+            vec![],
+            vec!["Select a directory installed by the system CUDA packages under /usr/local/cuda-VERSION, then create /usr/local/cuda as a symlink to that exact directory.".into()],
+        );
+    };
+    let target = format!("/usr/local/cuda-{version}");
+    (
+        vec![
+            CommandSpec::sudo("ln", ["-sfn", &target, "/usr/local/cuda"]),
+            CommandSpec::new("test", ["-x", "/usr/local/cuda/bin/nvcc"]),
+        ],
+        vec![],
+    )
+}
+
 fn fix(id: FixId, title: &str, commands: Vec<CommandSpec>, order: u16) -> Fix {
+    fix_with_manual(id, title, commands, vec![], order)
+}
+
+fn fix_with_manual(
+    id: FixId,
+    title: &str,
+    commands: Vec<CommandSpec>,
+    manual_steps: Vec<String>,
+    order: u16,
+) -> Fix {
     Fix {
         id,
         title: title.into(),
         commands,
-        manual_steps: vec![],
+        manual_steps,
         order,
     }
 }
@@ -720,8 +912,11 @@ mod tests {
             secure_boot_enabled: Some(false),
             dkms_status: None,
             driver_version: Some("570.26".into()),
-            toolkit_package_installed: false,
+            toolkit_packages: vec![],
+            managed_toolkit_version: None,
+            managed_nvcc: CommandEvidence::default(),
             nvcc: CommandEvidence::default(),
+            nvcc_path: None,
             nvcc_version: None,
             cuda_symlink: CudaSymlinkState::Missing,
             installed_cuda_versions: vec![],
@@ -744,7 +939,14 @@ mod tests {
     #[test]
     fn compatibility_warning_is_not_an_error() {
         let mut e = evidence();
-        e.toolkit_package_installed = true;
+        e.toolkit_packages = vec!["cuda-toolkit-12-8".into()];
+        e.managed_toolkit_version = Some("12.8".into());
+        e.managed_nvcc = CommandEvidence {
+            exists: true,
+            succeeded: true,
+            stdout: "release 12.8,".into(),
+            stderr: "".into(),
+        };
         e.installed_cuda_versions = vec!["12.8".into()];
         e.nvcc = CommandEvidence {
             exists: true,
@@ -762,5 +964,140 @@ mod tests {
                 .status,
             DiagnosticStatus::Warning
         );
+    }
+
+    #[test]
+    fn active_conda_nvcc_is_not_a_system_toolkit() {
+        let mut e = evidence();
+        e.nvcc = CommandEvidence {
+            exists: true,
+            succeeded: true,
+            stdout: "Cuda compilation tools, release 12.8,".into(),
+            stderr: "".into(),
+        };
+        e.nvcc_path = Some("/opt/conda/envs/ml/bin/nvcc".into());
+        e.nvcc_version = Some("12.8".into());
+        let diagnostics = diagnose(e, DoctorProfile::CudaDevelopment).unwrap();
+        let toolkit = diagnostics
+            .checks
+            .iter()
+            .find(|check| check.id == DiagnosticId::ToolkitInstall)
+            .unwrap();
+        assert_eq!(toolkit.status, DiagnosticStatus::Error);
+        assert!(toolkit.evidence[0].contains("system package(s): none"));
+    }
+
+    #[test]
+    fn broken_managed_driver_gets_exact_repair_instead_of_install_loop() {
+        let mut e = evidence();
+        e.driver = DriverInstallation::BrokenManaged {
+            flavor: DriverFlavorState::Open,
+            packages: vec!["nvidia-open".into(), "kmod-nvidia-open-dkms".into()],
+        };
+        e.nvidia_module_loaded = false;
+        e.nvidia_smi.succeeded = false;
+        e.driver_version = None;
+        e.dkms_status = Some("nvidia/580: added".into());
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+        let repair = diagnostics
+            .fix_plan
+            .fixes
+            .iter()
+            .find(|fix| fix.id == FixId::RepairManagedDriver)
+            .expect("managed repair fix");
+        let commands = repair
+            .commands
+            .iter()
+            .map(CommandSpec::display)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            commands.contains("apt-get install --reinstall -y nvidia-open kmod-nvidia-open-dkms")
+        );
+        assert!(commands.contains("linux-headers-6.8.0-generic"));
+        assert!(commands.contains("dkms autoinstall -k 6.8.0-generic"));
+        assert!(!commands.contains("cudaenv install"));
+        assert!(
+            diagnostics
+                .fix_plan
+                .fixes
+                .iter()
+                .any(|fix| fix.id == FixId::Reboot)
+        );
+        assert!(
+            diagnostics
+                .fix_plan
+                .fixes
+                .iter()
+                .all(|fix| { !fix.commands.is_empty() || !fix.manual_steps.is_empty() })
+        );
+    }
+
+    #[test]
+    fn unmanaged_driver_repair_is_manual() {
+        let mut e = evidence();
+        e.driver = DriverInstallation::Unmanaged {
+            working: false,
+            runfile_likely: true,
+        };
+        let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
+        let fix = diagnostics
+            .fix_plan
+            .fixes
+            .iter()
+            .find(|fix| fix.id == FixId::InstallDriver)
+            .unwrap();
+        assert!(fix.commands.is_empty());
+        assert!(
+            fix.manual_steps
+                .iter()
+                .any(|step| step.contains("nvidia-uninstall"))
+        );
+    }
+
+    #[test]
+    fn managed_reinstall_commands_are_package_scoped_for_every_manager() {
+        let packages = vec!["nvidia-open".into(), "kmod-nvidia-open-dkms".into()];
+        for (distribution, version, expected) in [
+            (
+                Distribution::Ubuntu,
+                "24.04",
+                "apt-get install --reinstall -y",
+            ),
+            (Distribution::Rhel, "9.8", "dnf reinstall -y"),
+            (Distribution::AzureLinux, "3.1", "tdnf reinstall -y"),
+            (
+                Distribution::OpenSuse,
+                "15.7",
+                "zypper --non-interactive install --force",
+            ),
+        ] {
+            let system = OsInfo {
+                distribution,
+                name: "Test".into(),
+                version_id: version.into(),
+                architecture: "x86_64".into(),
+                is_wsl: false,
+            };
+            let rendered = managed_package_reinstall_commands(&system, &packages)[0].display();
+            assert!(rendered.contains(expected), "{rendered}");
+            assert!(rendered.contains("nvidia-open kmod-nvidia-open-dkms"));
+        }
+    }
+
+    #[test]
+    fn cuda_symlink_repair_is_never_empty() {
+        let mut e = evidence();
+        e.toolkit_packages = vec!["cuda-toolkit-12-8".into()];
+        e.managed_toolkit_version = Some("12.8".into());
+        e.cuda_symlink = CudaSymlinkState::Broken("/missing/cuda-12.8".into());
+        let diagnostics = diagnose(e, DoctorProfile::CudaDevelopment).unwrap();
+        let repair = diagnostics
+            .fix_plan
+            .fixes
+            .iter()
+            .find(|fix| fix.id == FixId::RepairCudaSymlink)
+            .unwrap();
+        assert!(!repair.commands.is_empty() || !repair.manual_steps.is_empty());
     }
 }

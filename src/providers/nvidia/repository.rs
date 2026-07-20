@@ -13,79 +13,221 @@ use crate::model::{
 
 const CUDA_KEYRING_PACKAGE: &str = "cuda-keyring_1.1-1_all.deb";
 
+#[derive(Clone, Copy)]
+enum ReleaseTargets {
+    Exact(&'static [(&'static str, &'static str)]),
+    Major(&'static [(u32, &'static str)]),
+}
+
+#[derive(Clone, Copy)]
+struct SupportPolicy {
+    label: &'static str,
+    distributions: &'static [Distribution],
+    releases: ReleaseTargets,
+    architectures: &'static [&'static str],
+    nvidia_validated: &'static [&'static str],
+    cudaenv_tested: &'static [&'static str],
+}
+
+const X86: &[&str] = &["x86_64"];
+const X86_SBSA: &[&str] = &["x86_64", "sbsa"];
+
+/// Repository compatibility, NVIDIA validation, and cudaenv's own tested
+/// releases are intentionally represented separately here. Only repository
+/// compatibility controls target resolution.
+const SUPPORT_POLICIES: &[SupportPolicy] = &[
+    SupportPolicy {
+        label: "Ubuntu",
+        distributions: &[Distribution::Ubuntu],
+        releases: ReleaseTargets::Exact(&[
+            ("22.04", "ubuntu2204"),
+            ("24.04", "ubuntu2404"),
+            ("26.04", "ubuntu2604"),
+        ]),
+        architectures: X86_SBSA,
+        nvidia_validated: &["22.04", "24.04", "26.04"],
+        cudaenv_tested: &["24.04"],
+    },
+    SupportPolicy {
+        label: "Debian",
+        distributions: &[Distribution::Debian],
+        releases: ReleaseTargets::Major(&[(12, "debian12"), (13, "debian13")]),
+        architectures: X86,
+        nvidia_validated: &["12", "13"],
+        cudaenv_tested: &["12", "13"],
+    },
+    SupportPolicy {
+        label: "RHEL / AlmaLinux / Rocky Linux",
+        distributions: &[
+            Distribution::Rhel,
+            Distribution::AlmaLinux,
+            Distribution::RockyLinux,
+        ],
+        releases: ReleaseTargets::Major(&[(8, "rhel8"), (9, "rhel9"), (10, "rhel10")]),
+        architectures: X86_SBSA,
+        nvidia_validated: &["8.10", "9.7", "10.1"],
+        cudaenv_tested: &["8.10", "9.7", "10.1"],
+    },
+    SupportPolicy {
+        label: "Oracle Linux",
+        distributions: &[Distribution::OracleLinux],
+        releases: ReleaseTargets::Major(&[(8, "rhel8"), (9, "rhel9")]),
+        architectures: X86,
+        nvidia_validated: &["8", "9"],
+        cudaenv_tested: &["8", "9"],
+    },
+    SupportPolicy {
+        label: "Fedora",
+        distributions: &[Distribution::Fedora],
+        releases: ReleaseTargets::Exact(&[("44", "fedora44")]),
+        architectures: X86,
+        nvidia_validated: &["44"],
+        cudaenv_tested: &["44"],
+    },
+    SupportPolicy {
+        label: "Amazon Linux",
+        distributions: &[Distribution::AmazonLinux],
+        releases: ReleaseTargets::Major(&[(2023, "amzn2023")]),
+        architectures: X86_SBSA,
+        nvidia_validated: &["2023"],
+        cudaenv_tested: &["2023"],
+    },
+    SupportPolicy {
+        label: "Azure Linux",
+        distributions: &[Distribution::AzureLinux],
+        releases: ReleaseTargets::Major(&[(3, "azl3")]),
+        architectures: X86_SBSA,
+        nvidia_validated: &["3.0"],
+        cudaenv_tested: &["3.0"],
+    },
+    SupportPolicy {
+        label: "openSUSE Leap",
+        distributions: &[Distribution::OpenSuse],
+        releases: ReleaseTargets::Major(&[(15, "opensuse15"), (16, "suse16")]),
+        architectures: X86,
+        nvidia_validated: &["15.6", "16.0"],
+        cudaenv_tested: &["15.6", "16.0"],
+    },
+    SupportPolicy {
+        label: "SLES",
+        distributions: &[Distribution::Sles],
+        releases: ReleaseTargets::Major(&[(15, "sles15"), (16, "suse16")]),
+        architectures: X86_SBSA,
+        nvidia_validated: &["15.6", "15.7", "16.0"],
+        cudaenv_tested: &["15.6", "15.7", "16.0"],
+    },
+    SupportPolicy {
+        label: "KylinOS",
+        distributions: &[Distribution::KylinOs],
+        releases: ReleaseTargets::Exact(&[("V11", "kylin11"), ("V11 2503", "kylin11")]),
+        architectures: X86_SBSA,
+        nvidia_validated: &["V11", "V11 2503"],
+        cudaenv_tested: &["V11 2503"],
+    },
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NvidiaRepository {
     pub distro: String,
     pub base_url: String,
+    pub family: String,
+    pub nvidia_validated: bool,
+    pub cudaenv_tested: bool,
 }
 
 pub fn resolve(os: &OsInfo) -> Result<NvidiaRepository> {
-    let major = version_major(&os.version_id);
-    let distro = match os.distribution {
-        Distribution::Ubuntu if matches!(release(&os.version_id), "22.04" | "24.04" | "26.04") => {
-            format!("ubuntu{}", release(&os.version_id).replace('.', ""))
-        }
-        Distribution::Debian if matches!(os.version_id.as_str(), "12" | "13") => {
-            format!("debian{}", os.version_id)
-        }
-        Distribution::Rhel | Distribution::AlmaLinux | Distribution::RockyLinux
-            if matches!(os.version_id.as_str(), "8.10" | "9.7" | "10.1") =>
-        {
-            format!("rhel{}", major.unwrap())
-        }
-        Distribution::OracleLinux if matches!(os.version_id.as_str(), "8" | "9") => {
-            format!("rhel{}", os.version_id)
-        }
-        Distribution::Fedora if os.version_id == "44" => "fedora44".to_owned(),
-        Distribution::AmazonLinux if os.version_id == "2023" => "amzn2023".to_owned(),
-        Distribution::AzureLinux if os.version_id == "3.0" => "azl3".to_owned(),
-        Distribution::OpenSuse if os.version_id == "15.6" => "opensuse15".to_owned(),
-        Distribution::OpenSuse if matches!(os.version_id.as_str(), "16" | "16.0") => {
-            "suse16".to_owned()
-        }
-        Distribution::Sles if matches!(os.version_id.as_str(), "15.6" | "15.7") => {
-            "sles15".to_owned()
-        }
-        Distribution::Sles if matches!(os.version_id.as_str(), "16" | "16.0") => {
-            "suse16".to_owned()
-        }
-        Distribution::KylinOs
-            if matches!(
-                os.version_id.to_ascii_uppercase().as_str(),
-                "V11" | "V11 2503"
-            ) =>
-        {
-            "kylin11".to_owned()
-        }
-        _ => bail!(
-            "NVIDIA does not publish an exact repository target for {}. Refusing to substitute another distribution or release.",
-            os.display_name()
-        ),
-    };
+    let policy = SUPPORT_POLICIES
+        .iter()
+        .find(|policy| policy.distributions.contains(&os.distribution))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no NVIDIA repository policy exists for {}",
+                os.display_name()
+            )
+        })?;
+    let distro = resolve_release_target(policy.releases, &os.version_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "NVIDIA does not publish a compatible {} repository target for {}. NVIDIA-validated releases: {}; cudaenv-tested releases: {}. Refusing to substitute another distribution family or release.",
+            policy.label,
+            os.display_name(),
+            policy.nvidia_validated.join(", "),
+            policy.cudaenv_tested.join(", ")
+        )
+    })?;
     let architecture = match os.architecture.as_str() {
         "x86_64" | "amd64" => "x86_64",
-        "aarch64" | "arm64"
-            if matches!(
-                os.distribution,
-                Distribution::Rhel
-                    | Distribution::Ubuntu
-                    | Distribution::Sles
-                    | Distribution::KylinOs
-                    | Distribution::AzureLinux
-                    | Distribution::AmazonLinux
-            ) =>
-        {
-            "sbsa"
-        }
-        architecture => bail!(
-            "NVIDIA does not publish a supported CUDA repository for architecture {architecture} on {}",
-            os.display_name()
-        ),
+        "aarch64" | "arm64" => "sbsa",
+        architecture => architecture,
     };
+    if !policy.architectures.contains(&architecture) {
+        bail!(
+            "NVIDIA does not publish a supported CUDA repository for architecture {} on {}",
+            os.architecture,
+            os.display_name()
+        );
+    }
     let base_url = format!(
         "https://developer.download.nvidia.com/compute/cuda/repos/{distro}/{architecture}/"
     );
-    Ok(NvidiaRepository { distro, base_url })
+    Ok(NvidiaRepository {
+        distro,
+        base_url,
+        family: policy.label.into(),
+        nvidia_validated: contains_release(policy.nvidia_validated, &os.version_id),
+        cudaenv_tested: contains_release(policy.cudaenv_tested, &os.version_id),
+    })
+}
+
+fn contains_release(releases: &[&str], version: &str) -> bool {
+    releases
+        .iter()
+        .any(|release| release.eq_ignore_ascii_case(version))
+}
+
+fn resolve_release_target(targets: ReleaseTargets, version: &str) -> Option<String> {
+    match targets {
+        ReleaseTargets::Exact(values) => values
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(version))
+            .map(|(_, target)| (*target).to_owned()),
+        ReleaseTargets::Major(values) => {
+            let major = version_major(version)?;
+            values
+                .iter()
+                .find(|(candidate, _)| *candidate == major)
+                .map(|(_, target)| (*target).to_owned())
+        }
+    }
+}
+
+#[cfg(test)]
+fn readme_support_table() -> String {
+    let mut table = String::from(
+        "| Distribution family | Compatible repository releases | NVIDIA validated | Tested by cudaenv | Architectures |\n| --- | --- | --- | --- | --- |\n",
+    );
+    for policy in SUPPORT_POLICIES {
+        let compatible = match policy.releases {
+            ReleaseTargets::Exact(values) => values
+                .iter()
+                .map(|(release, _)| *release)
+                .collect::<Vec<_>>()
+                .join(", "),
+            ReleaseTargets::Major(values) => values
+                .iter()
+                .map(|(major, _)| format!("{major}.x"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        table.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            policy.label,
+            compatible,
+            policy.nvidia_validated.join(", "),
+            policy.cudaenv_tested.join(", "),
+            policy.architectures.join(", ")
+        ));
+    }
+    table
 }
 
 pub fn is_configured(os: &OsInfo, repository: &NvidiaRepository) -> Result<bool> {
@@ -232,16 +374,6 @@ fn temporary_download_path(file_name: &str) -> PathBuf {
     ))
 }
 
-fn release(version: &str) -> &str {
-    let end = version
-        .char_indices()
-        .take_while(|(_, c)| c.is_ascii_digit() || *c == '.')
-        .map(|(i, c)| i + c.len_utf8())
-        .last()
-        .unwrap_or(0);
-    &version[..end]
-}
-
 fn version_major(version: &str) -> Option<u32> {
     version
         .split(['.', ' ', '-'])
@@ -275,7 +407,9 @@ mod tests {
             (Distribution::Debian, "13", "debian13"),
             (Distribution::Rhel, "8.10", "rhel8"),
             (Distribution::Rhel, "9.7", "rhel9"),
+            (Distribution::Rhel, "9.8", "rhel9"),
             (Distribution::Rhel, "10.1", "rhel10"),
+            (Distribution::RockyLinux, "10.4", "rhel10"),
             (Distribution::RockyLinux, "9.7", "rhel9"),
             (Distribution::AlmaLinux, "10.1", "rhel10"),
             (Distribution::OracleLinux, "9", "rhel9"),
@@ -296,11 +430,25 @@ mod tests {
     }
 
     #[test]
+    fn distinguishes_compatible_validated_and_tested_releases() {
+        let validated = resolve(&os(Distribution::Rhel, "9.7")).unwrap();
+        assert!(validated.nvidia_validated);
+        assert!(validated.cudaenv_tested);
+
+        let newer_minor = resolve(&os(Distribution::Rhel, "9.8")).unwrap();
+        assert_eq!(newer_minor.distro, "rhel9");
+        assert!(!newer_minor.nvidia_validated);
+        assert!(!newer_minor.cudaenv_tested);
+    }
+
+    #[test]
     fn rejects_unpublished_release_instead_of_substituting() {
         assert!(resolve(&os(Distribution::Ubuntu, "25.10")).is_err());
-        assert!(resolve(&os(Distribution::Rhel, "9.6")).is_err());
-        assert!(resolve(&os(Distribution::AmazonLinux, "2023.1")).is_err());
-        assert!(resolve(&os(Distribution::AzureLinux, "3.1")).is_err());
+        assert!(resolve(&os(Distribution::Rhel, "7.9")).is_err());
+        assert!(resolve(&os(Distribution::Rhel, "11.0")).is_err());
+        assert!(resolve(&os(Distribution::AmazonLinux, "2")).is_err());
+        assert!(resolve(&os(Distribution::AzureLinux, "4.0")).is_err());
+        assert!(resolve(&os(Distribution::Fedora, "45")).is_err());
     }
 
     #[test]
@@ -371,6 +519,16 @@ mod tests {
             setup_commands_with_downloader(PackageManager::Zypper, &repository, "curl")[1]
                 .display()
                 .contains("--gpg-auto-import-keys")
+        );
+    }
+
+    #[test]
+    fn readme_support_table_is_generated_from_resolver_metadata() {
+        let readme = include_str!("../../../README.md");
+        let table = readme_support_table();
+        assert!(
+            readme.contains(&table),
+            "README support table must match centralized repository metadata:\n{table}"
         );
     }
 }

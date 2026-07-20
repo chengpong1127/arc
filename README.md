@@ -94,7 +94,16 @@ cudaenv status
 - Detected NVIDIA GPUs
 - Whether an NVIDIA driver package is installed
 - Whether the driver is loaded and operational
-- The installed CUDA development tools version, when available
+- System package-manager CUDA Toolkit installations and the packages that
+  prove they are manageable by cudaenv
+- The active `nvcc` version and executable path separately, as informational
+  PATH state
+
+A Conda environment, environment module, custom `PATH`, or user-installed
+`nvcc` is never treated as proof that an APT, RPM, or Zypper Toolkit package is
+installed. Install and upgrade decisions use system package inventory; the
+active compiler can therefore be reported while the system-managed Toolkit is
+reported as absent.
 
 Already-installed components are skipped when you run `cudaenv install` again.
 
@@ -131,6 +140,12 @@ kernel-module flavor; changing flavor is an explicit install/migration operation
 Maxwell, Pascal, and Volta remain on proprietary R580 and CUDA 12.x. Unknown GPU
 generations and incompatible mixed-generation systems fail safely.
 
+`--driver` is strictly package-scoped: APT uses `install --only-upgrade` for the
+detected driver package, while DNF, TDNF, and Zypper receive that exact package
+as the update target. Dependencies required by the package manager may change,
+but cudaenv never plans a distribution upgrade or an unrestricted system update
+as part of a driver-only upgrade.
+
 Exact-version Toolkit installations move to the newest compatible exact Toolkit
 package side by side. Older Toolkit packages and directories are retained.
 `/usr/local/cuda` is updated only when it is a symlink clearly pointing at the
@@ -155,6 +170,15 @@ compatibility. The default `model-training` profile treats a missing Toolkit as
 normal; `cuda-development` treats it as an error. If a Toolkit is present but
 partial or broken, both profiles report the fault.
 
+For a broken package-managed driver, doctor provides a concrete repair plan:
+install the development packages matching the running kernel, reinstall the
+exact detected NVIDIA packages with the native package manager, rebuild DKMS
+when applicable, verify module metadata, and reboot. Doctor does not
+automatically repair unmanaged or NVIDIA runfile installations; it instead
+prints clear steps for using the original installation method. CUDA symlink
+advice always includes executable commands or an explicit manual target-selection
+step.
+
 ## Uninstall
 
 ```bash
@@ -174,22 +198,28 @@ cudaenv uninstall --yes
 
 ## Supported systems
 
-`cudaenv` supports NVIDIA's official repositories for these Linux families:
+`cudaenv` resolves only official NVIDIA repository targets. Repository
+compatibility is separate from NVIDIA's current validation matrix and from the
+releases exercised by cudaenv's maintainers. When NVIDIA publishes one target
+for a major family (for example `rhel9` or `rhel10`), compatible newer minor
+releases in that same family resolve to it. cudaenv never substitutes a target
+from another distribution family.
 
-- Ubuntu 22.04, 24.04, and 26.04
-- Debian 12 and 13
-- RHEL, AlmaLinux, and Rocky Linux 8.10, 9.7, and 10.1
-- Oracle Linux 8 and 9
-- Fedora 44
-- Amazon Linux 2023
-- Azure Linux 3
-- openSUSE Leap 15 SP6 and 16
-- SUSE Linux Enterprise Server 15 SP6/SP7 and 16
-- KylinOS V11 / V11 2503
+| Distribution family | Compatible repository releases | NVIDIA validated | Tested by cudaenv | Architectures |
+| --- | --- | --- | --- | --- |
+| Ubuntu | 22.04, 24.04, 26.04 | 22.04, 24.04, 26.04 | 24.04 | x86_64, sbsa |
+| Debian | 12.x, 13.x | 12, 13 | 12, 13 | x86_64 |
+| RHEL / AlmaLinux / Rocky Linux | 8.x, 9.x, 10.x | 8.10, 9.7, 10.1 | 8.10, 9.7, 10.1 | x86_64, sbsa |
+| Oracle Linux | 8.x, 9.x | 8, 9 | 8, 9 | x86_64 |
+| Fedora | 44 | 44 | 44 | x86_64 |
+| Amazon Linux | 2023.x | 2023 | 2023 | x86_64, sbsa |
+| Azure Linux | 3.x | 3.0 | 3.0 | x86_64, sbsa |
+| openSUSE Leap | 15.x, 16.x | 15.6, 16.0 | 15.6, 16.0 | x86_64 |
+| SLES | 15.x, 16.x | 15.6, 15.7, 16.0 | 15.6, 15.7, 16.0 | x86_64, sbsa |
+| KylinOS | V11, V11 2503 | V11, V11 2503 | V11 2503 | x86_64, sbsa |
 
-Support depends on NVIDIA publishing a repository for the exact operating
-system, release, and CPU architecture. `cudaenv` stops instead of substituting a
-repository from another distribution.
+Unsupported major families, distribution-specific targets that NVIDIA does not
+publish, and unsupported CPU architectures are rejected.
 
 WSL is detected but driver installation inside WSL is intentionally blocked.
 Install the NVIDIA driver on the Windows host; WSL uses the host driver.

@@ -131,7 +131,9 @@ mod tests {
     use super::*;
     use crate::model::{
         device::GpuVendor,
-        environment::{DriverFlavorState, DriverInstallation, DriverPackageScope, ToolkitStatus},
+        environment::{
+            DriverFlavorState, DriverInstallation, DriverPackageScope, ToolkitSource, ToolkitStatus,
+        },
     };
 
     fn managed() -> DriverInstallation {
@@ -151,9 +153,14 @@ mod tests {
             driver: managed(),
             driver_version: Some("570".into()),
             toolkits: vec![ToolkitStatus {
-                name: "CUDA Toolkit".into(),
-                version: "13.1".into(),
+                name: "System-managed CUDA Toolkit".into(),
+                version: Some("13.1".into()),
+                executable_path: Some("/usr/local/cuda-13.1/bin/nvcc".into()),
+                source: ToolkitSource::SystemPackageManager,
+                packages: vec!["cuda-toolkit-13-1".into()],
+                manageable: true,
             }],
+            active_toolkit: None,
         };
         let plan = build_plan(
             &status,
@@ -177,9 +184,14 @@ mod tests {
             driver: DriverInstallation::Missing,
             driver_version: None,
             toolkits: vec![ToolkitStatus {
-                name: "CUDA Toolkit".into(),
-                version: "13.1".into(),
+                name: "System-managed CUDA Toolkit".into(),
+                version: Some("13.1".into()),
+                executable_path: Some("/usr/local/cuda-13.1/bin/nvcc".into()),
+                source: ToolkitSource::SystemPackageManager,
+                packages: vec!["cuda-toolkit-13-1".into()],
+                manageable: true,
             }],
+            active_toolkit: None,
         };
         let plan = build_plan(&status, vec!["cuda-toolkit-13-1".into()]);
         let commands = plan

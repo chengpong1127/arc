@@ -68,13 +68,28 @@ pub fn system_status(
                 .unwrap_or("Not loaded or not operational")
         );
         for toolkit in &status.toolkits {
-            println!("\n{}:\n{}", toolkit.name, toolkit.version);
+            println!(
+                "\n{}:\n{}\nPackages: {}\nManageable by cudaenv: {}",
+                toolkit.name,
+                toolkit.version.as_deref().unwrap_or("version unknown"),
+                toolkit.packages.join(", "),
+                if toolkit.manageable { "yes" } else { "no" }
+            );
             if let Some(version) = upgrades.and_then(|value| value.toolkit.as_deref()) {
                 println!("Available compatible version: {version}");
             }
         }
         if status.toolkits.is_empty() {
-            println!("\nDevelopment Toolkit:\nNot installed");
+            println!("\nSystem-managed CUDA Toolkit:\nNot installed");
+        }
+        if let Some(active) = &status.active_toolkit {
+            println!(
+                "\nActive nvcc (informational):\n{}\nPath: {}\nManaged by cudaenv: no",
+                active.version.as_deref().unwrap_or("version unknown"),
+                active.executable_path.as_deref().unwrap_or("unknown")
+            );
+        } else {
+            println!("\nActive nvcc (informational):\nNot found on PATH");
         }
     }
 }
