@@ -3,7 +3,10 @@ use std::{path::Path, process::Command};
 use anyhow::{Context, Result};
 
 use crate::model::{
-    environment::{DriverFlavorState, DriverInstallation, DriverPackageScope, ProviderStatus},
+    environment::{
+        DriverFlavorState, DriverInstallation, DriverPackageScope, ProviderStatus,
+        UnmanagedDriverEvidence,
+    },
     system::OsInfo,
 };
 
@@ -15,13 +18,15 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
     let packages = installed_packages(os)?;
     let module_loaded = Path::new("/sys/module/nvidia").exists();
     let module_metadata_available = driver::module_metadata_available();
-    let runfile_likely = Path::new("/usr/bin/nvidia-uninstall").exists()
-        || Path::new("/var/log/nvidia-installer.log").exists();
+    let runfile_uninstaller = Path::new("/usr/bin/nvidia-uninstall").exists();
+    let installer_log = Path::new("/var/log/nvidia-installer.log").exists();
     let driver = classify_driver(
         &packages,
-        driver_version.is_some() || module_loaded,
+        driver_version.is_some(),
+        module_loaded,
         module_metadata_available,
-        runfile_likely,
+        runfile_uninstaller,
+        installer_log,
     );
     let active_toolkit = toolkit::detect_active()?;
     let toolkits = toolkit::managed_status(&packages, active_toolkit.as_ref());
@@ -37,20 +42,40 @@ pub fn inspect(os: &OsInfo) -> Result<ProviderStatus> {
 
 pub fn classify_driver(
     installed: &[String],
-    runtime_working: bool,
+    driver_version_detected: bool,
+    module_loaded: bool,
     module_metadata_available: bool,
-    runfile_likely: bool,
+    runfile_uninstaller: bool,
+    installer_log: bool,
 ) -> DriverInstallation {
+    let runtime_working = driver_version_detected || module_loaded;
     let packages = installed
         .iter()
         .filter(|package| is_nvidia_driver_package(package))
         .cloned()
         .collect::<Vec<_>>();
     if packages.is_empty() {
-        return if runtime_working || module_metadata_available || runfile_likely {
+        return if runtime_working || module_metadata_available || runfile_uninstaller {
+            let mut evidence = Vec::new();
+            if runfile_uninstaller {
+                evidence.push(UnmanagedDriverEvidence::RunfileUninstaller);
+            }
+            if driver_version_detected {
+                evidence.push(UnmanagedDriverEvidence::DriverVersion);
+            }
+            if module_loaded {
+                evidence.push(UnmanagedDriverEvidence::LoadedModule);
+            }
+            if module_metadata_available {
+                evidence.push(UnmanagedDriverEvidence::ModuleMetadata);
+            }
+            // The log supports other evidence, but is never sufficient by itself.
+            if installer_log {
+                evidence.push(UnmanagedDriverEvidence::InstallerLog);
+            }
             DriverInstallation::Unmanaged {
                 working: runtime_working,
-                runfile_likely,
+                evidence,
             }
         } else {
             DriverInstallation::Missing
@@ -168,18 +193,20 @@ mod tests {
     #[test]
     fn distinguishes_missing_unmanaged_scoped_broken_and_pinned_installs() {
         assert_eq!(
-            classify_driver(&[], false, false, false),
+            classify_driver(&[], false, false, false, false, false),
             DriverInstallation::Missing
         );
         assert!(matches!(
-            classify_driver(&[], true, false, true),
+            classify_driver(&[], true, false, false, true, false),
             DriverInstallation::Unmanaged { working: true, .. }
         ));
         assert!(matches!(
             classify_driver(
                 &["nvidia-driver-cuda".into(), "kmod-nvidia-open-dkms".into()],
                 true,
+                false,
                 true,
+                false,
                 false
             ),
             DriverInstallation::Managed {
@@ -189,7 +216,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            classify_driver(&["cuda-drivers".into()], false, false, false),
+            classify_driver(&["cuda-drivers".into()], false, false, false, false, false),
             DriverInstallation::BrokenManaged {
                 flavor: DriverFlavorState::Proprietary,
                 ..
@@ -199,7 +226,9 @@ mod tests {
             classify_driver(
                 &["cuda-drivers".into(), "nvidia-driver-pinning-580".into()],
                 true,
+                false,
                 true,
+                false,
                 false
             ),
             DriverInstallation::Managed {
@@ -218,7 +247,9 @@ mod tests {
                 "nvidia-kernel-source-610-open".into(),
             ],
             false,
+            false,
             true,
+            false,
             false,
         );
 
@@ -230,5 +261,49 @@ mod tests {
             }
         ));
         assert!(is_nvidia_driver_package("nvidia-dkms-610-open"));
+    }
+
+    #[test]
+    fn stale_installer_log_alone_is_missing() {
+        assert_eq!(
+            classify_driver(&[], false, false, false, false, true),
+            DriverInstallation::Missing
+        );
+    }
+
+    #[test]
+    fn runfile_uninstaller_is_strong_unmanaged_evidence() {
+        assert_eq!(
+            classify_driver(&[], false, false, false, true, true),
+            DriverInstallation::Unmanaged {
+                working: false,
+                evidence: vec![
+                    UnmanagedDriverEvidence::RunfileUninstaller,
+                    UnmanagedDriverEvidence::InstallerLog,
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn loaded_module_without_managed_packages_is_unmanaged() {
+        assert_eq!(
+            classify_driver(&[], false, true, false, false, false),
+            DriverInstallation::Unmanaged {
+                working: true,
+                evidence: vec![UnmanagedDriverEvidence::LoadedModule],
+            }
+        );
+    }
+
+    #[test]
+    fn packages_without_runtime_or_module_metadata_are_broken_managed() {
+        assert_eq!(
+            classify_driver(&["cuda-drivers".into()], false, false, false, false, true,),
+            DriverInstallation::BrokenManaged {
+                flavor: DriverFlavorState::Proprietary,
+                packages: vec!["cuda-drivers".into()],
+            }
+        );
     }
 }

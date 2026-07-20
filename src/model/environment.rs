@@ -47,6 +47,29 @@ pub enum DriverPackageScope {
     DesktopOnly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnmanagedDriverEvidence {
+    RunfileUninstaller,
+    DriverVersion,
+    LoadedModule,
+    ModuleMetadata,
+    InstallerLog,
+}
+
+impl fmt::Display for UnmanagedDriverEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::RunfileUninstaller => "`/usr/bin/nvidia-uninstall` exists",
+            Self::DriverVersion => "an NVIDIA driver version was detected",
+            Self::LoadedModule => "the NVIDIA kernel module is loaded",
+            Self::ModuleMetadata => "NVIDIA kernel module metadata is present",
+            Self::InstallerLog => {
+                "`/var/log/nvidia-installer.log` exists (supporting evidence only)"
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DriverInstallation {
     Missing,
@@ -62,7 +85,7 @@ pub enum DriverInstallation {
     },
     Unmanaged {
         working: bool,
-        runfile_likely: bool,
+        evidence: Vec<UnmanagedDriverEvidence>,
     },
 }
 
@@ -91,17 +114,14 @@ impl DriverInstallation {
             Self::BrokenManaged { flavor, .. } => {
                 format!("broken managed {flavor:?} installation")
             }
-            Self::Unmanaged {
-                working,
-                runfile_likely,
-            } => format!(
-                "{} unmanaged installation{}",
+            Self::Unmanaged { working, evidence } => format!(
+                "{} unmanaged installation (evidence: {})",
                 if *working { "working" } else { "broken" },
-                if *runfile_likely {
-                    " (runfile likely)"
-                } else {
-                    ""
-                }
+                evidence
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ),
         }
     }

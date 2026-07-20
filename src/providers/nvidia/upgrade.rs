@@ -570,14 +570,14 @@ fn validate_gpus(os: &OsInfo, gpus: &[NvidiaGpu]) -> Result<()> {
 fn validate_driver_state(os: &OsInfo, current: &UpgradeState, legacy: bool) -> Result<()> {
     match &current.status.driver {
         DriverInstallation::Missing => return Ok(()),
-        DriverInstallation::Unmanaged { runfile_likely, .. } => {
+        DriverInstallation::Unmanaged { evidence, .. } => {
             return Err(blocked(format!(
-                "{} driver installation detected; migrate it to a supported package-manager installation before `arc upgrade`",
-                if *runfile_likely {
-                    "runfile"
-                } else {
-                    "unmanaged"
-                }
+                "unmanaged driver installation detected (evidence: {}); migrate it to a supported package-manager installation before `arc upgrade`",
+                evidence
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             )));
         }
         DriverInstallation::BrokenManaged { .. } => {
@@ -642,13 +642,13 @@ fn validate_driver_state(os: &OsInfo, current: &UpgradeState, legacy: bool) -> R
 
 fn validate_driver_manageability(current: &UpgradeState) -> Result<()> {
     match &current.status.driver {
-        DriverInstallation::Unmanaged { runfile_likely, .. } => Err(blocked(format!(
-            "{} driver installation detected; migrate it to a supported package-manager installation before upgrading CUDA repository packages",
-            if *runfile_likely {
-                "runfile"
-            } else {
-                "unmanaged"
-            }
+        DriverInstallation::Unmanaged { evidence, .. } => Err(blocked(format!(
+            "unmanaged driver installation detected (evidence: {}); migrate it to a supported package-manager installation before upgrading CUDA repository packages",
+            evidence
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
         ))),
         DriverInstallation::BrokenManaged { .. } => Err(blocked(
             "the managed driver installation is partial or broken; run `arc doctor` before upgrading",
@@ -1327,7 +1327,9 @@ mod tests {
         for installation in [
             DriverInstallation::Unmanaged {
                 working: true,
-                runfile_likely: true,
+                evidence: vec![
+                    crate::model::environment::UnmanagedDriverEvidence::RunfileUninstaller,
+                ],
             },
             DriverInstallation::BrokenManaged {
                 flavor: DriverFlavorState::Open,

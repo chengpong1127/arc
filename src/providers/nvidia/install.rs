@@ -85,17 +85,17 @@ fn build_plan(
     let recipe = recipe::resolve(os, kernel, policy)?;
     if let DriverInstallation::Unmanaged {
         working,
-        runfile_likely,
+        ref evidence,
     } = status.driver
     {
         bail!(
-            "A{} unmanaged NVIDIA driver installation was detected{}. arc will not install repository packages over it. Remove it with its original installer or migrate it to distribution packages first.",
+            "A{} unmanaged NVIDIA driver installation was detected (evidence: {}). arc will not install repository packages over it. Remove it with its original installer or migrate it to distribution packages first.",
             if working { " working" } else { " broken" },
-            if runfile_likely {
-                " (likely installed by the NVIDIA runfile)"
-            } else {
-                ""
-            }
+            evidence
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
         );
     }
     if status.driver.flavor() == Some(DriverFlavorState::Mixed) {
@@ -569,7 +569,9 @@ mod tests {
             &status(
                 DriverInstallation::Unmanaged {
                     working: true,
-                    runfile_likely: true,
+                    evidence: vec![
+                        crate::model::environment::UnmanagedDriverEvidence::RunfileUninstaller,
+                    ],
                 },
                 None,
             ),

@@ -244,10 +244,42 @@ pub fn checks(e: &NvidiaEvidence, profile: DoctorProfile) -> Vec<DiagnosticCheck
     ));
     let (driver_status, driver_problem) = match &e.driver {
         DriverInstallation::Managed { .. } => (DiagnosticStatus::Pass, None),
-        DriverInstallation::Missing => (DiagnosticStatus::Error, Some("No managed NVIDIA driver package installation was detected.".into())),
-        DriverInstallation::BrokenManaged { .. } => (DiagnosticStatus::Error, Some("NVIDIA packages are installed, but the driver runtime is broken.".into())),
-        DriverInstallation::Unmanaged { working: true, .. } => (DiagnosticStatus::Warning, Some("A working unmanaged driver is present; arc will not overwrite it with repository packages.".into())),
-        DriverInstallation::Unmanaged { working: false, .. } => (DiagnosticStatus::Error, Some("An unmanaged driver installation appears broken and must be removed with its original installer.".into())),
+        DriverInstallation::Missing => (
+            DiagnosticStatus::Error,
+            Some("No managed NVIDIA driver package installation was detected.".into()),
+        ),
+        DriverInstallation::BrokenManaged { .. } => (
+            DiagnosticStatus::Error,
+            Some("NVIDIA packages are installed, but the driver runtime is broken.".into()),
+        ),
+        DriverInstallation::Unmanaged {
+            working: true,
+            evidence,
+        } => (
+            DiagnosticStatus::Warning,
+            Some(format!(
+                "A working unmanaged driver is present (evidence: {}); arc will not overwrite it with repository packages.",
+                evidence
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )),
+        ),
+        DriverInstallation::Unmanaged {
+            working: false,
+            evidence,
+        } => (
+            DiagnosticStatus::Error,
+            Some(format!(
+                "An unmanaged driver installation appears broken (evidence: {}) and must be removed with its original installer.",
+                evidence
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )),
+        ),
     };
     result.push(check(
         DiagnosticId::DriverPackage,
@@ -556,15 +588,15 @@ fn cause(title: &str, fixes: Vec<FixId>) -> DiagnosticCause {
 fn available_fixes(e: &NvidiaEvidence) -> Result<Vec<Fix>> {
     let prerequisites = recipe::prerequisites(&e.os, &e.kernel_release).unwrap_or_default();
     let (install_driver_commands, install_driver_steps) = match &e.driver {
-        DriverInstallation::Unmanaged { runfile_likely, .. } => (
+        DriverInstallation::Unmanaged { evidence, .. } => (
             vec![],
             vec![format!(
-                "Do not use arc to overwrite this installation. Repair or remove it with {} and then rerun arc doctor.",
-                if *runfile_likely {
-                    "the original NVIDIA runfile installer (normally `sudo nvidia-uninstall`)"
-                } else {
-                    "the original installation method"
-                }
+                "Do not use arc to overwrite this installation (evidence: {}). Repair or remove it with the original installation method and then rerun arc doctor.",
+                evidence
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             )],
         ),
         _ => (
@@ -1018,7 +1050,7 @@ mod tests {
         let mut e = evidence();
         e.driver = DriverInstallation::Unmanaged {
             working: false,
-            runfile_likely: true,
+            evidence: vec![crate::model::environment::UnmanagedDriverEvidence::RunfileUninstaller],
         };
         let diagnostics = diagnose(e, DoctorProfile::ModelTraining).unwrap();
         let fix = diagnostics

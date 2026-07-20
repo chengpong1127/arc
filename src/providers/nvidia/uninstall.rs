@@ -25,9 +25,14 @@ pub fn plan(os: &OsInfo, status: &ProviderStatus) -> Result<OperationPlan> {
             os.display_name()
         );
     }
-    if matches!(status.driver, DriverInstallation::Unmanaged { .. }) {
+    if let DriverInstallation::Unmanaged { evidence, .. } = &status.driver {
         bail!(
-            "An unmanaged or runfile NVIDIA driver was detected. arc cannot safely uninstall it; use the original NVIDIA installer or migrate it to Ubuntu packages first."
+            "An unmanaged NVIDIA driver was detected (evidence: {}). arc cannot safely uninstall it; use the original installation method or migrate it to Ubuntu packages first.",
+            evidence
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
         );
     }
     let packages = installed_apt_packages(NVIDIA_CUDA_PATTERNS)?;
