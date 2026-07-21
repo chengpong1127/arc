@@ -1,219 +1,136 @@
-# arc
+# Arc
 
-`arc` makes it easier to set up an NVIDIA GPU environment on Linux. It
-detects your GPU and operating system, chooses the appropriate NVIDIA packages,
-shows every planned change, and asks for confirmation before installation.
+**One command for a working NVIDIA GPU environment.**
 
-## Install arc
+Setting up NVIDIA GPUs on Linux should not require becoming an expert in
+drivers, CUDA Toolkit releases, package repositories, GPU compatibility, and
+kernel modules. Arc automatically detects the system, selects compatible
+NVIDIA components, and safely configures the environment for model training or
+CUDA development.
+
+Arc is a Linux command-line tool. The product is **Arc**; the executable and
+all commands use lowercase `arc`.
+
+## Why Arc?
+
+NVIDIA's Linux software stack has several layers that are easy to confuse. A
+working driver is required to use the GPU, while the system CUDA Toolkit and
+`nvcc` are needed only to compile native CUDA code. The correct packages also
+depend on the Linux distribution, CPU architecture, GPU generation, kernel,
+and existing installation state.
+
+Arc turns those decisions into a guided workflow:
+
+- Detect NVIDIA GPUs, Linux distribution, architecture, kernel, driver state,
+  CUDA Toolkit installations, and active `nvcc`.
+- Choose compatible packages from official NVIDIA repository targets.
+- Configure for either model training or native CUDA development.
+- Show the complete installation plan before making changes.
+- Diagnose common failures with specific next steps.
+
+## Installation
+
+Install the latest verified release:
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/chengpong1127/arc/main/install.sh | sh
 ```
 
-The installer downloads a verified release and places `arc` in
-`~/.local/bin`. If that directory is not already in your `PATH`, follow the
-instruction printed by the installer.
-
-After installing the command, the script asks whether you want to configure
-your GPU environment immediately. You can answer `n` and run `arc install`
+The installer verifies the release checksum and places `arc` in
+`~/.local/bin`. If needed, follow its prompt to add that directory to `PATH`.
+The installer can start GPU setup immediately, or you can run `arc install`
 later.
 
-## Set up your GPU environment
+Run Arc as your normal user. It uses `sudo` for privileged plan steps when
+available and stops before execution if the required privileges are missing.
+
+## Quick Start
+
+Start with a read-only view of the machine:
+
+```bash
+arc status
+arc doctor
+```
+
+Then launch the guided installer:
 
 ```bash
 arc install
 ```
 
-The guided setup asks what you want to use the machine for:
+Arc asks which environment you need:
 
-```text
-Model training     PyTorch, TensorFlow, or JAX
-CUDA development   Native CUDA apps and custom kernels
-```
+| Profile | Use it for | What Arc requires |
+| --- | --- | --- |
+| `model-training` | PyTorch, TensorFlow, or JAX | An operational NVIDIA driver. Frameworks provide their own CUDA runtime and are installed separately. |
+| `cuda-development` | Native CUDA applications and custom kernels | An operational NVIDIA driver, a system CUDA Toolkit, and working `nvcc`. |
 
-Model training configures the system for frameworks that provide their own CUDA
-runtime. CUDA development also installs the tools needed to compile CUDA code.
-
-Before changing the system, `arc` displays the detected GPU, operating
-system, repository, packages, and commands it plans to use. Nothing is installed
-until you confirm.
-
-Useful installation options:
+Preview an installation without changing the system, or select a profile for
+an unattended workflow:
 
 ```bash
-# Preview the installation without changing the system
 arc install --dry-run
-
-# Select model training without showing the usage prompt
-arc install --profile model-training
-
-# Select CUDA development without showing the usage prompt
-arc install --profile cuda-development
-
-# Install a specific CUDA version
-arc install --toolkit 13.1
-
-# Skip the final confirmation for an unattended installation
 arc install --profile model-training --yes
+arc install --profile cuda-development --toolkit 13.1 --yes
 ```
 
-Driver selection is automatic for recognized GPUs. If the GPU generation cannot
-be identified safely, `arc` asks you to check the GPU and rerun with an
-explicit choice:
+After installing or upgrading a driver, reboot if Arc requests it. Then verify
+the result:
+
+```bash
+nvidia-smi
+arc status
+```
+
+## How It Works
+
+1. **Inspect:** Arc detects hardware, the operating system, installed packages,
+   driver runtime health, repositories, the system CUDA Toolkit, and `nvcc`.
+2. **Decide:** It applies GPU-generation, operating-system, and
+   driver/Toolkit compatibility rules to select a safe configuration.
+3. **Plan:** Arc displays the repository, packages, and operations it intends
+   to use. Already-satisfied components are skipped.
+4. **Confirm and execute:** Nothing is installed until you approve the plan.
+5. **Verify:** `arc status` summarizes readiness, while `arc doctor` checks
+   failures and recommends concrete repairs.
+
+Driver selection is automatic for recognized GPUs. Turing and newer GPUs
+default to the latest compatible NVIDIA open kernel modules where supported.
+Maxwell, Pascal, and Volta use the proprietary R580 branch and CUDA 12.x; mixed
+modern and legacy systems follow the legacy policy so every GPU remains
+supported. If Arc cannot identify a GPU generation safely, it stops and asks
+for an explicit choice:
 
 ```bash
 arc install --driver open
 arc install --driver proprietary
 ```
 
-The support policy is generation-aware:
+Arc distinguishes package-managed installations from unmanaged or NVIDIA
+runfile installations. It does not install distribution packages over a
+working unmanaged driver; migrate or remove that driver with its original
+installation method first.
 
-- Turing and newer GPUs default to the latest NVIDIA open kernel modules.
-- Maxwell, Pascal, and Volta GPUs use proprietary modules pinned to the R580
-  branch. They cannot use CUDA 13.x; CUDA development requires an explicit
-  CUDA 12.x selection such as `--toolkit 12.8`.
-- A machine containing both modern and legacy GPUs follows the legacy policy so
-  every installed GPU remains supported.
-- `--driver open` is rejected when any detected GPU is Maxwell, Pascal, or
-  Volta. Unknown GPUs require an explicit choice, and OS-specific restrictions
-  are still enforced.
+## Built with Codex and GPT-5.6
 
-`arc` detects full, compute-only, desktop-only, branch-pinned, broken, and
-unmanaged driver installations. It never installs distribution packages over
-a working runfile or otherwise unmanaged driver; migrate or remove that driver
-with its original installation method first.
+Codex was used throughout Arc's development. It helped design the Rust
+architecture, implement system detection and installation planning, build
+diagnostics, create tests, and refine the CLI experience.
 
-## Check the current environment
+GPT-5.6 helped analyze NVIDIA documentation, Linux compatibility cases, driver
+edge cases, and implementation tradeoffs. Important decisions were validated
+against NVIDIA documentation and real Linux systems.
 
-```bash
-arc status
+Arc does **not** use GPT-5.6 at runtime. Detection, planning, and execution are
+performed locally by the Rust CLI.
 
-# Evaluate the stricter Toolkit and compiler requirements
-arc status --profile cuda-development
-```
+## Supported Systems
 
-`arc status` reports:
-
-- Detected NVIDIA GPUs
-- Whether an NVIDIA driver package is installed
-- Whether the driver is loaded and operational
-- System package-manager CUDA Toolkit installations and the packages that
-  prove they are manageable by arc
-- The active `nvcc` version and executable path separately, as informational
-  PATH state
-- A compact readiness summary for the selected profile, including missing
-  requirements and the next `arc install` or `arc doctor` action
-
-The default `model-training` readiness check requires an operational NVIDIA
-driver runtime; frameworks such as PyTorch, TensorFlow, and JAX are installed
-separately. The `cuda-development` check additionally requires a system CUDA
-Toolkit and working `nvcc` before reporting that CUDA applications can be
-compiled and run.
-
-A Conda environment, environment module, custom `PATH`, or user-installed
-`nvcc` is never treated as proof that an APT, RPM, or Zypper Toolkit package is
-installed. Install and upgrade decisions use system package inventory; the
-active compiler can therefore be reported while the system-managed Toolkit is
-reported as absent.
-
-Already-installed components are skipped when you run `arc install` again.
-
-When repository metadata can be queried reliably, status also reports a newer
-compatible driver or Toolkit version. If metadata is unavailable, it reports
-only installed state and does not claim the system is current.
-
-## Upgrade installed components
-
-```bash
-# Upgrade every supported component that is already installed
-arc upgrade
-
-# Select either component, or provide both flags together
-arc upgrade --driver
-arc upgrade --toolkit
-arc upgrade --driver --toolkit
-
-# Preview the exact plan, or skip confirmation
-arc upgrade --dry-run
-arc upgrade --yes
-```
-
-“Latest compatible” means the newest candidate published by the configured
-NVIDIA repository that satisfies the detected GPU generation, operating system,
-architecture, installed driver flavor and branch restrictions, Toolkit tracking
-boundary, and driver/Toolkit compatibility policy. It does not mean the package
-with the highest version number regardless of those constraints.
-
-Upgrade changes only components already present. A machine without a system
-CUDA Toolkit will not gain one, and selecting only absent components is a
-successful no-op. Driver upgrades preserve the installed open or proprietary
-kernel-module flavor; changing flavor is an explicit install/migration operation.
-Maxwell, Pascal, and Volta remain on proprietary R580 and CUDA 12.x. Unknown GPU
-generations and incompatible mixed-generation systems fail safely.
-
-`--driver` is strictly package-scoped: APT uses `install --only-upgrade` for the
-detected driver package, while DNF, TDNF, and Zypper receive that exact package
-as the update target. Dependencies required by the package manager may change,
-but arc never plans a distribution upgrade or an unrestricted system update
-as part of a driver-only upgrade.
-
-Exact-version Toolkit installations move to the newest compatible exact Toolkit
-package side by side. Older Toolkit packages and directories are retained.
-`/usr/local/cuda` is updated only when it is a symlink clearly pointing at the
-Toolkit being upgraded; a user-managed file or directory is never overwritten.
-Unmanaged and NVIDIA runfile driver installations are refused until migrated to
-a supported package-manager installation. A driver upgrade requires a reboot;
-the loaded driver may continue reporting its pre-upgrade version until then.
-
-## Diagnose problems
-
-```bash
-arc doctor
-
-# Require the CUDA development Toolkit checks
-arc doctor --profile cuda-development
-```
-
-The doctor checks GPU detection, driver installation, driver runtime health,
-`nvidia-smi`, exact OS/GPU policy, repository support, matching kernel
-development packages, Secure Boot, and complete driver/Toolkit version
-compatibility. The default `model-training` profile treats a missing Toolkit as
-normal; `cuda-development` treats it as an error. If a Toolkit is present but
-partial or broken, both profiles report the fault.
-
-For a broken package-managed driver, doctor provides a concrete repair plan:
-install the development packages matching the running kernel, reinstall the
-exact detected NVIDIA packages with the native package manager, rebuild DKMS
-when applicable, verify module metadata, and reboot. Doctor does not
-automatically repair unmanaged or NVIDIA runfile installations; it instead
-prints clear steps for using the original installation method. CUDA symlink
-advice always includes executable commands or an explicit manual target-selection
-step.
-
-## Uninstall
-
-```bash
-arc uninstall
-```
-
-Uninstall is currently supported only on Ubuntu. It enumerates every installed
-`cuda-*`, `nvidia-*`, `libnvidia-*`, and NVIDIA X driver package, displays the
-exact list and purge/autoremove commands, and asks for confirmation. It refuses
-to remove unmanaged or runfile installations automatically.
-
-To skip the final confirmation:
-
-```bash
-arc uninstall --yes
-```
-
-## Supported systems
-
-`arc` resolves only official NVIDIA repository targets. Repository
-compatibility is separate from NVIDIA's current validation matrix. When NVIDIA publishes one target
-for a major family (for example `rhel9` or `rhel10`), compatible newer minor
-releases in that same family resolve to it. arc never substitutes a target
-from another distribution family.
+Arc uses official NVIDIA repository targets. When NVIDIA publishes one target
+for a distribution family, such as `rhel9`, compatible minor releases in that
+family resolve to it. Arc never substitutes a target from another distribution
+family.
 
 | Distribution family | Compatible repository releases | NVIDIA validated | Architectures |
 | --- | --- | --- | --- |
@@ -230,27 +147,85 @@ from another distribution family.
 | SLES | 15.6+, 16.0+ | 15.6, 15.7, 16.0 | x86_64, sbsa |
 | KylinOS | V11, V11 2503 | V11, V11 2503 | x86_64, sbsa |
 
-Unsupported major families, distribution-specific targets that NVIDIA does not
-publish, and unsupported CPU architectures are rejected.
+Unsupported distribution families, repository targets, and CPU architectures
+are rejected. WSL is detected, but driver installation inside WSL is blocked;
+install the NVIDIA driver on the Windows host instead.
 
-WSL is detected but driver installation inside WSL is intentionally blocked.
-Install the NVIDIA driver on the Windows host; WSL uses the host driver.
+## Commands
 
-Run `arc install` as your normal user. Privileged plan steps use `sudo` when
-available. When already running as root, the displayed and executed commands
-run directly without `sudo`. If neither root privileges nor `sudo` is
-available, arc stops before executing the plan. Status and evidence
-collection remain unprivileged wherever the operating system permits it.
+### `arc status`
+
+Reports detected GPUs, driver installation and runtime state, system-managed
+CUDA Toolkits, the active `nvcc`, and readiness for the selected profile.
+
+```bash
+arc status
+arc status --profile cuda-development
+```
+
+### `arc doctor`
+
+Checks GPU detection, driver and `nvidia-smi` health, OS/GPU policy, repository
+support, running-kernel development packages, Secure Boot, and driver/Toolkit
+compatibility. It provides repair steps but does not automatically repair
+unmanaged or runfile installations.
+
+```bash
+arc doctor
+arc doctor --profile cuda-development
+```
+
+### `arc install`
+
+Builds and executes a safety-first installation plan. Use `--dry-run` to
+preview it, `--profile` to skip the workload prompt, `--toolkit` to select a
+CUDA Toolkit version, and `--yes` for unattended confirmation.
+
+```bash
+arc install
+arc install --dry-run
+arc install --profile model-training
+arc install --profile cuda-development --toolkit 12.8
+```
+
+### `arc upgrade`
+
+Upgrades installed, supported components to their latest compatible versions.
+It does not add an absent Toolkit, change the installed driver flavor, or run
+an unrestricted system upgrade.
+
+```bash
+arc upgrade
+arc upgrade --driver
+arc upgrade --toolkit
+arc upgrade --dry-run
+```
+
+### `arc uninstall`
+
+Plans removal of NVIDIA driver and CUDA Toolkit packages, shows the exact
+package list, and asks for confirmation. Uninstall is currently supported only
+on Ubuntu and refuses to remove unmanaged or runfile installations.
+
+```bash
+arc uninstall
+arc uninstall --yes
+```
+
+Global flags include `--verbose` (`-v`) for streamed command output and
+`--show-commands` for exact commands in operation plans.
 
 ## Safety
 
-- Installation and removal plans are displayed before confirmation.
+- Installation, upgrade, and removal plans are displayed before confirmation.
 - `--dry-run` never changes the system.
-- Commands are executed directly without shell interpolation.
-- Repository and release downloads require HTTPS.
-- Release archives are verified using published SHA-256 checksums.
-- Unsupported systems and ambiguous GPU generations fail safely.
-- Matching running-kernel prerequisites and distro dependency repositories are
-  installed before the driver package.
-- Driver flavor or branch changes use explicit package-manager transition
-  operations and are shown separately in the plan.
+- Commands run directly without shell interpolation.
+- Repository and release downloads require HTTPS, and release archives are
+  verified with published SHA-256 checksums.
+- Unsupported systems, ambiguous GPUs, incompatible mixed generations, and
+  unsafe unmanaged installations fail safely.
+- Arc installs prerequisites for the running kernel before the driver package.
+- Driver flavor and branch transitions are explicit and shown separately in
+  the plan.
+- System package inventory—not a Conda environment, custom `PATH`, or
+  user-installed `nvcc`—determines installation and upgrade decisions.
